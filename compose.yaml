@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgis/postgis:18-3.6
+    platform: linux/amd64
+    container_name: mininav-db
+    environment:
+      POSTGRES_DB: mininav
+      POSTGRES_USER: mininav
+      POSTGRES_PASSWORD: mininav
+    ports:
+      - "5432:5432"
+    volumes:
+      - mininav_pgdata:/var/lib/postgresql
+
+  backend:
+    build: ./backend
+    container_name: mininav-backend
+    command: uv run python manage.py runserver 0.0.0.0:8000
+    environment:
+      DJANGO_SECRET_KEY: dev-secret-key
+      DJANGO_DEBUG: "true"
+      DB_NAME: mininav
+      DB_USER: mininav
+      DB_PASSWORD: mininav
+      DB_HOST: db
+      DB_PORT: "5432"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - db
+
+volumes:
+  mininav_pgdata:

@@ -1,1 +1,3 @@
 # mininav
+
+A navigation app.
