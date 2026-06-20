@@ -32,12 +32,15 @@ docker compose exec backend uv run python manage.py migrate # new migrations
 docker compose exec db psql -U mininav -d mininav # access database
 
 # Frontend checks
-docker compose run --rm --no-deps frontend npm run lint
-docker compose run --rm --no-deps frontend npm run build
+docker compose run --rm --no-deps frontend npm run format
+docker compose run --rm --no-deps frontend npm run check
 
 # New frontend dependency
 docker compose run --rm --no-deps frontend npm install <package>
 docker compose build frontend
+
+# With e2e tests
+docker compose up --build --abort-on-container-exit --exit-code-from e2e e2e
 
 docker compose down
 
@@ -47,5 +50,17 @@ docker compose down --volumes # deletes container and volumes, including databas
 
 ## Notes
 
-Do not run backend commands directly with local uv unless you intentionally want to set up the native GIS
-dependencies on your machine.
+Do not run backend commands directly with local uv unless you intentionally want to set up the native GIS dependencies on your machine.
+
+- frontend/src/**/*.test.tsx: Vitest component/unit tests
+- frontend/e2e/**/*.spec.ts: Playwright browser tests
+
+When upgrading Playwright, keep the @playwright/test version in frontend/package.json aligned with the image version in frontend/Dockerfile.e2e.
+
+Current intended structure of frontend/src/:
+- components/: reusable presentation components.
+- features/: domain-specific components and hooks.
+- pages/: URL-level screens.
+- lib/: infrastructure (such as HTTP utilities).
+- app/: app-wide providers and configuration.
+- test/: shared test setup.
