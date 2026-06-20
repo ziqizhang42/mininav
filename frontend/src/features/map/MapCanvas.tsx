@@ -11,9 +11,30 @@ export function MapCanvas() {
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: 'https://demotiles.maplibre.org/globe.json',
+      style: 'https://tiles.openfreemap.org/styles/liberty',
       center: [-114.0719, 51.0447],
-      zoom: 5,
+      zoom: 10,
+    })
+
+    map.on('style.load', () => {
+      map.addLayer({
+        id: 'house-numbers',
+        type: 'symbol',
+        source: 'openmaptiles',
+        'source-layer': 'housenumber',
+        minzoom: 17,
+        layout: {
+          'text-field': ['to-string', ['get', 'housenumber']],
+          'text-font': ['Noto Sans Regular'],
+          'text-size': 11,
+          'text-allow-overlap': false,
+        },
+        paint: {
+          'text-color': '#6b6259',
+          'text-halo-color': '#ffffff',
+          'text-halo-width': 1,
+        },
+      })
     })
 
     map.addControl(new maplibregl.NavigationControl())
