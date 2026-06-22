@@ -39,6 +39,10 @@ docker compose run --rm --no-deps frontend npm run check
 docker compose run --rm --no-deps frontend npm install <package>
 docker compose build frontend
 
+# Backend checks
+docker compose run --rm --no-deps backend uv run ruff check --fix .
+docker compose run --rm --no-deps backend uv run ruff format .
+
 # With e2e tests
 docker compose up --build --abort-on-container-exit --exit-code-from e2e e2e
 
