@@ -1,0 +1,38 @@
+from rest_framework import serializers
+
+
+class CoordinateSerializer(serializers.Serializer):
+    longitude = serializers.FloatField(min_value=-180, max_value=180)
+    latitude = serializers.FloatField(min_value=-90, max_value=90)
+
+
+class RouteRequestSerializer(serializers.Serializer):
+    origin = CoordinateSerializer()
+    destination = CoordinateSerializer()
+    mode = serializers.ChoiceField(choices=["driving"], default="driving")
+
+
+class SnappedCoordinateSerializer(CoordinateSerializer):
+    node_id = serializers.IntegerField()
+    snap_distance_meters = serializers.FloatField()
+
+
+class GeometrySerializer(serializers.Serializer):
+    type = serializers.ChoiceField(choices=["LineString"])
+    coordinates = serializers.ListField(
+        child=serializers.ListField(
+            child=serializers.FloatField(),
+            min_length=2,
+            max_length=2,
+        ),
+        min_length=2,
+    )
+
+
+class RouteResponseSerializer(serializers.Serializer):
+    origin = SnappedCoordinateSerializer()
+    destination = SnappedCoordinateSerializer()
+    distance_meters = serializers.FloatField()
+    duration_seconds = serializers.FloatField()
+    edge_count = serializers.IntegerField()
+    geometry = GeometrySerializer()
