@@ -31,3 +31,28 @@ export async function getJson<TSchema extends ZodType>(
   const data: unknown = await response.json()
   return schema.parse(data)
 }
+
+export async function postJson<TSchema extends ZodType>(
+  path: string,
+  body: unknown,
+  schema: TSchema,
+): Promise<output<TSchema>> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      `Request failed with status ${response.status}`,
+    )
+  }
+
+  const data: unknown = await response.json()
+  return schema.parse(data)
+}
