@@ -17,6 +17,7 @@ services:
     container_name: mininav-backend
     command: uv run python manage.py runserver 0.0.0.0:8000
     environment:
+      DJANGO_ALLOWED_HOSTS: backend
       DJANGO_SECRET_KEY: dev-secret-key
       DJANGO_DEBUG: "true"
       DB_NAME: mininav
@@ -28,6 +29,7 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+      - ./data/osm:/data/osm:ro
     depends_on:
       - db
 
