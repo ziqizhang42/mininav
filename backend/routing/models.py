@@ -44,3 +44,21 @@ class RoadEdge(models.Model):
                 name="road_edges_reverse_idx",
             ),
         ]
+
+
+class TurnRestriction(models.Model):
+    osm_relation_id = models.BigIntegerField(primary_key=True)
+    restriction = models.CharField(max_length=64)
+    from_way_id = models.BigIntegerField()
+    via_node_id = models.BigIntegerField()
+    to_way_id = models.BigIntegerField()
+    tags = models.JSONField(default=dict)
+
+    class Meta:
+        db_table = "turn_restrictions"
+        indexes = [
+            models.Index(
+                fields=["from_way_id", "via_node_id", "to_way_id"],
+                name="turn_restriction_lookup_idx",
+            ),
+        ]

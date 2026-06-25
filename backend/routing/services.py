@@ -9,6 +9,7 @@ from routing.graph import Edge, Graph
 from routing.loaders import load_graph_from_database
 from routing.models import RoadEdge
 from routing.snapping import SnappedEdge, nearest_edge
+from routing.turns import TurnRules, load_turn_rules_from_database
 
 # Negative IDs are synthetic route-only graph elements (never stored in the DB)
 # or small negative nodes IDs are for testing
@@ -45,6 +46,11 @@ def get_graph() -> Graph:
     return load_graph_from_database()
 
 
+@lru_cache(maxsize=1)
+def get_turn_rules() -> TurnRules:
+    return load_turn_rules_from_database()
+
+
 def calculate_route(
     origin_longitude: float,
     origin_latitude: float,
@@ -61,6 +67,7 @@ def calculate_route(
         ORIGIN_NODE_ID,
         DESTINATION_NODE_ID,
         extra_edges=extra_edges,
+        turn_rules=get_turn_rules(),
     )
 
     if path is None:
@@ -133,6 +140,7 @@ def build_origin_connector_edges(
             source=ORIGIN_NODE_ID,
             target=origin.target_node_id,
             cost=origin.cost_seconds * (1 - origin.fraction),
+            osm_way_id=origin.osm_way_id,
         )
     ]
 
@@ -152,6 +160,7 @@ def build_origin_connector_edges(
                 source=ORIGIN_NODE_ID,
                 target=origin.source_node_id,
                 cost=origin.cost_seconds * origin.fraction,
+                osm_way_id=origin.osm_way_id,
             )
         )
 
@@ -175,6 +184,7 @@ def build_destination_connector_edges(
             source=destination.source_node_id,
             target=DESTINATION_NODE_ID,
             cost=destination.cost_seconds * destination.fraction,
+            osm_way_id=destination.osm_way_id,
         )
     ]
 
@@ -194,6 +204,7 @@ def build_destination_connector_edges(
                 source=destination.target_node_id,
                 target=DESTINATION_NODE_ID,
                 cost=destination.cost_seconds * (1 - destination.fraction),
+                osm_way_id=destination.osm_way_id,
             )
         )
 
@@ -242,6 +253,7 @@ def add_direct_edges(
                 source=ORIGIN_NODE_ID,
                 target=DESTINATION_NODE_ID,
                 cost=direct_cost,
+                osm_way_id=destination.osm_way_id,
             ),
         )
 
@@ -271,6 +283,7 @@ def add_direct_edges(
                 source=ORIGIN_NODE_ID,
                 target=DESTINATION_NODE_ID,
                 cost=direct_cost,
+                osm_way_id=origin.osm_way_id,
             ),
         )
 

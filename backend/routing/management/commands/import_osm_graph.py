@@ -12,7 +12,7 @@ from routing.access import permits_driving
 from routing.costs import DRIVING_SPEEDS_KPH, driving_cost_seconds
 from routing.directions import permitted_directions
 from routing.geo import distance_meters
-from routing.models import RoadEdge, RoadNode
+from routing.models import RoadEdge, RoadNode, TurnRestriction
 
 
 class Command(BaseCommand):
@@ -42,6 +42,7 @@ class Command(BaseCommand):
             # Preserve the negative ID development graph. Imported OSM IDs are positive.
             RoadEdge.objects.filter(osm_way_id__gt=0).delete()
             RoadNode.objects.filter(osm_id__gt=0).delete()
+            TurnRestriction.objects.filter(osm_relation_id__gt=0).delete()
 
             node_count = self.copy_nodes(file_path, graph_nodes)
 
@@ -51,17 +52,20 @@ class Command(BaseCommand):
                 )
 
             edge_count = self.copy_edges(file_path, graph_nodes)
+            restriction_count = self.copy_turn_restrictions(file_path)
 
         with connection.cursor() as cursor:
             cursor.execute("ANALYZE road_nodes")
             cursor.execute("ANALYZE road_edges")
+            cursor.execute("ANALYZE turn_restrictions")
 
         elapsed = monotonic() - started_at
 
         self.stdout.write(
             self.style.SUCCESS(
-                f"Imported {node_count:,} nodes and "
-                f"{edge_count:,} directed edges "
+                f"Imported {node_count:,} nodes, "
+                f"{edge_count:,} directed edges, and "
+                f"{restriction_count:,} turn restrictions "
                 f"in {elapsed:.1f} seconds"
             )
         )
@@ -184,14 +188,19 @@ class Command(BaseCommand):
                         if length <= 0:
                             continue
 
-                        cost = driving_cost_seconds(length, tags["highway"])
+                        forward_cost = driving_cost_seconds(
+                            length, tags, direction="forward"
+                        )
+                        reverse_cost = driving_cost_seconds(
+                            length, tags, direction="backward"
+                        )
 
-                        if cost is None:
+                        if forward_cost is None and reverse_cost is None:
                             continue
 
                         tags_json = json.dumps(tags, separators=(",", ":"))
 
-                        if forward:
+                        if forward and forward_cost is not None:
                             self.write_edge(
                                 copy=copy,
                                 way=way,
@@ -200,13 +209,13 @@ class Command(BaseCommand):
                                 target_id=target.ref,
                                 coordinates=coordinates,
                                 length=length,
-                                cost=cost,
+                                cost=forward_cost,
                                 tags=tags,
                                 tags_json=tags_json,
                             )
                             written += 1
 
-                        if reverse:
+                        if reverse and reverse_cost is not None:
                             self.write_edge(
                                 copy=copy,
                                 way=way,
@@ -215,7 +224,7 @@ class Command(BaseCommand):
                                 target_id=source.ref,
                                 coordinates=list(reversed(coordinates)),
                                 length=length,
-                                cost=cost,
+                                cost=reverse_cost,
                                 tags=tags,
                                 tags_json=tags_json,
                             )
@@ -290,3 +299,104 @@ class Command(BaseCommand):
             return None
 
         return tags
+
+    def copy_turn_restrictions(self, file_path: Path) -> int:
+        self.stdout.write("Pass 4: copying turn restrictions... ")
+
+        processor = osmium.FileProcessor(
+            file_path,
+            osmium.osm.RELATION,
+        ).with_filter(osmium.filter.EntityFilter(osmium.osm.RELATION))
+
+        written = 0
+
+        with connection.cursor() as cursor:
+            with cursor.copy(
+                """
+                COPY turn_restrictions (
+                    osm_relation_id,
+                    restriction,
+                    from_way_id,
+                    via_node_id,
+                    to_way_id,
+                    tags
+                )
+                FROM STDIN
+                """
+            ) as copy:
+                for relation in processor:
+                    parsed = self.node_via_turn_restriction(relation)
+
+                    if parsed is None:
+                        continue
+
+                    restriction, from_way_id, via_node_id, to_way_id, tags = parsed
+                    tags_json = json.dumps(tags, separators=(",", ":"))
+
+                    copy.write_row(
+                        (
+                            relation.id,
+                            restriction,
+                            from_way_id,
+                            via_node_id,
+                            to_way_id,
+                            tags_json,
+                        )
+                    )
+                    written += 1
+
+        self.stdout.write(f"Copied {written:,} turn restrictions")
+
+        return written
+
+    def node_via_turn_restriction(
+        self,
+        relation: osmium.osm.Relation,
+    ) -> tuple[str, int, int, int, dict[str, str]] | None:
+        tags = dict(relation.tags)
+
+        if tags.get("type") != "restriction":
+            return None
+
+        if "restriction:conditional" in tags and "restriction" not in tags:
+            return None
+
+        restriction = tags.get("restriction")
+
+        if restriction is None:
+            return None
+
+        if not self.restriction_applies_to_driving(tags):
+            return None
+
+        from_way_ids = []
+        via_node_ids = []
+        to_way_ids = []
+
+        for member in relation.members:
+            if member.role == "from" and member.type == "w":
+                from_way_ids.append(member.ref)
+            elif member.role == "via" and member.type == "n":
+                via_node_ids.append(member.ref)
+            elif member.role == "to" and member.type == "w":
+                to_way_ids.append(member.ref)
+
+        if len(from_way_ids) != 1 or len(via_node_ids) != 1 or len(to_way_ids) != 1:
+            return None
+
+        return (
+            restriction,
+            from_way_ids[0],
+            via_node_ids[0],
+            to_way_ids[0],
+            tags,
+        )
+
+    def restriction_applies_to_driving(self, tags: dict[str, str]) -> bool:
+        exceptions = {
+            value.strip()
+            for value in tags.get("except", "").split(";")
+            if value.strip()
+        }
+
+        return not exceptions.intersection({"motorcar", "motor_vehicle", "vehicle"})

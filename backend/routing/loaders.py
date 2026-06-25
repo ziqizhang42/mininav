@@ -11,14 +11,16 @@ def load_graph_from_database() -> Graph:
         "source_id",
         "target_id",
         "cost_seconds",
+        "osm_way_id",
     ).iterator(chunk_size=10_000)
 
-    for edge_id, source, target, cost in rows:
+    for edge_id, source, target, cost, osm_way_id in rows:
         edge = Edge(
             id=edge_id,
             source=source,
             target=target,
             cost=cost,
+            osm_way_id=osm_way_id,
         )
 
         graph.setdefault(source, []).append(edge)

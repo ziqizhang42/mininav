@@ -7,6 +7,7 @@ class Edge:
     source: int
     target: int
     cost: float
+    osm_way_id: int | None = None
 
 
 Graph = dict[int, list[Edge]]
