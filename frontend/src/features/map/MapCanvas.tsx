@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useReducer, useRef } from 'react'
 import maplibregl from 'maplibre-gl'
 
 import {
@@ -7,11 +7,19 @@ import {
   type RouteResponse,
 } from '../routing/api'
 
+import { initialRouteState, routeReducer, type RouteEvent } from './routeState'
+
 const ROUTE_SOURCE_ID = 'route'
 const ROUTE_LAYER_ID = 'route-line'
 
 export function MapCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
+  const [routeState, dispatch] = useReducer(routeReducer, initialRouteState)
+  const routeStateRef = useRef(routeState)
+
+  useEffect(() => {
+    routeStateRef.current = routeState
+  }, [routeState])
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -25,11 +33,15 @@ export function MapCanvas() {
       zoom: 10,
     })
 
-    let origin: Coordinate | null = null
     let originMarker: maplibregl.Marker | null = null
     let destinationMarker: maplibregl.Marker | null = null
     let activeRequest = 0
     let disposed = false
+
+    function dispatchRoute(event: RouteEvent) {
+      routeStateRef.current = routeReducer(routeStateRef.current, event)
+      dispatch(event)
+    }
 
     map.on('style.load', () => {
       map.addLayer({
@@ -71,6 +83,8 @@ export function MapCanvas() {
       if (map.getSource(ROUTE_SOURCE_ID)) {
         map.removeSource(ROUTE_SOURCE_ID)
       }
+
+      dispatchRoute({ type: 'resetRequested' })
     }
 
     function drawRoute(route: RouteResponse) {
@@ -120,25 +134,39 @@ export function MapCanvas() {
       })
     }
 
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'Escape') {
+        return
+      }
+
+      clearRoute()
+    }
+
     async function handleMapClick(event: maplibregl.MapMouseEvent) {
       const coordinate: Coordinate = {
         longitude: event.lngLat.lng,
         latitude: event.lngLat.lat,
       }
 
-      if (origin === null) {
+      const currentRouteState = routeStateRef.current
+
+      if (currentRouteState.status === 'loading') {
+        return
+      }
+
+      if (currentRouteState.status !== 'selecting-destination') {
         clearRoute()
 
-        origin = coordinate
         originMarker = new maplibregl.Marker({ color: '#16a34a' })
           .setLngLat([coordinate.longitude, coordinate.latitude])
           .addTo(map)
 
+        dispatchRoute({ type: 'originSelected', origin: coordinate })
+
         return
       }
 
-      const selectedOrigin = origin
-      origin = null
+      const selectedOrigin = currentRouteState.origin
 
       destinationMarker = new maplibregl.Marker({ color: '#dc2626' })
         .setLngLat([coordinate.longitude, coordinate.latitude])
@@ -146,6 +174,12 @@ export function MapCanvas() {
 
       const requestNumber = ++activeRequest
 
+      dispatchRoute({
+        type: 'routeRequested',
+        origin: selectedOrigin,
+        destination: coordinate,
+        requestId: requestNumber,
+      })
       try {
         const route = await requestRoute(selectedOrigin, coordinate)
 
@@ -153,17 +187,37 @@ export function MapCanvas() {
           return
         }
 
+        dispatchRoute({
+          type: 'routeSucceeded',
+          requestId: requestNumber,
+          route,
+        })
         drawRoute(route)
       } catch (error) {
+        if (disposed || requestNumber !== activeRequest) {
+          return
+        }
+
+        dispatchRoute({
+          type: 'routeFailed',
+          requestId: requestNumber,
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Unable to calculate route',
+        })
+
         console.error('Unable to calculate route', error)
       }
     }
 
     map.on('click', handleMapClick)
+    window.addEventListener('keydown', handleKeyDown)
 
     return () => {
       disposed = true
       map.off('click', handleMapClick)
+      window.removeEventListener('keydown', handleKeyDown)
       originMarker?.remove()
       destinationMarker?.remove()
       map.remove()
@@ -171,10 +225,68 @@ export function MapCanvas() {
   }, [])
 
   return (
-    <div
-      ref={containerRef}
-      className="min-h-0 w-full flex-1"
-      aria-label="Map of Alberta"
-    />
+    <div className="relative min-h-0 w-full flex-1">
+      <div
+        ref={containerRef}
+        className="h-full w-full"
+        aria-label="Map of Alberta"
+      />
+
+      <section
+        className="absolute top-4 left-4 z-10 max-w-sm rounded-md border bg-white/95 px-4 py-3 text-sm shadow-sm"
+        aria-live="polite"
+      >
+        {routeState.status === 'idle' && <p>Click a start point.</p>}
+
+        {routeState.status === 'selecting-destination' && (
+          <p>Click a destination.</p>
+        )}
+
+        {routeState.status === 'loading' && <p>Calculating route...</p>}
+
+        {routeState.status === 'error' && (
+          <p className="text-red-700">{routeState.message}</p>
+        )}
+
+        {routeState.status === 'success' && (
+          <div className="space-y-1">
+            <p className="font-medium">Route ready</p>
+            <p>
+              {formatDistance(routeState.route.distance_meters)} ·{' '}
+              {formatDuration(routeState.route.duration_seconds)}
+            </p>
+          </div>
+        )}
+      </section>
+    </div>
   )
+}
+
+function formatDistance(meters: number) {
+  if (meters >= 1000) {
+    return `${(meters / 1000).toFixed(1)} km`
+  }
+
+  return `${Math.round(meters)} m`
+}
+
+function formatDuration(seconds: number) {
+  const minutes = Math.round(seconds / 60)
+
+  if (minutes < 1) {
+    return '< 1 min'
+  }
+
+  if (minutes < 60) {
+    return `${minutes} min`
+  }
+
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+
+  if (remainingMinutes === 0) {
+    return `${hours} hr`
+  }
+
+  return `${hours} hr ${remainingMinutes} min`
 }
