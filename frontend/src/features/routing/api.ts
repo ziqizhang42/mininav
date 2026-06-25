@@ -8,7 +8,7 @@ const coordinateSchema = z.object({
 })
 
 const snappedCoordinateSchema = coordinateSchema.extend({
-  node_id: z.number().int(),
+  edge_id: z.number().int(),
   snap_distance_meters: z.number().nonnegative(),
 })
 

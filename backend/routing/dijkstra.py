@@ -1,7 +1,8 @@
 import heapq
+from collections.abc import Mapping
 from dataclasses import dataclass
 
-from routing.graph import Graph
+from routing.graph import Edge, Graph
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,7 +17,11 @@ def shortest_path(
     graph: Graph,
     start: int,
     end: int,
+    extra_edges: Mapping[int, tuple[Edge, ...]] | None = None,
 ) -> Path | None:
+    if extra_edges is None:
+        extra_edges = {}
+
     distances = {start: 0.0}
     previous: dict[int, tuple[int, int]] = {}
     queue = [(0.0, start)]
@@ -32,7 +37,9 @@ def shortest_path(
 
             return Path(nodes=nodes, edge_ids=edge_ids, total_cost=current_cost)
 
-        for edge in graph[current_node]:
+        edges = [*graph.get(current_node, []), *extra_edges.get(current_node, ())]
+
+        for edge in edges:
             new_cost = current_cost + edge.cost
             known_cost = distances.get(edge.target, float("inf"))
 

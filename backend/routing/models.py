@@ -39,4 +39,8 @@ class RoadEdge(models.Model):
         db_table = "road_edges"
         indexes = [
             models.Index(fields=["osm_way_id"], name="road_edges_way_idx"),
+            models.Index(
+                fields=["osm_way_id", "segment_index", "source", "target"],
+                name="road_edges_reverse_idx",
+            ),
         ]

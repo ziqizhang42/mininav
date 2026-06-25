@@ -13,7 +13,7 @@ class RouteRequestSerializer(serializers.Serializer):
 
 
 class SnappedCoordinateSerializer(CoordinateSerializer):
-    node_id = serializers.IntegerField()
+    edge_id = serializers.IntegerField()
     snap_distance_meters = serializers.FloatField()
 
 

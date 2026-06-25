@@ -10,6 +10,7 @@ import {
 import { initialRouteState, routeReducer, type RouteEvent } from './routeState'
 
 const ROUTE_SOURCE_ID = 'route'
+const ROUTE_CASING_LAYER_ID = 'route-casing'
 const ROUTE_LAYER_ID = 'route-line'
 
 export function MapCanvas() {
@@ -76,8 +77,10 @@ export function MapCanvas() {
       originMarker = null
       destinationMarker = null
 
-      if (map.getLayer(ROUTE_LAYER_ID)) {
-        map.removeLayer(ROUTE_LAYER_ID)
+      for (const layerId of [ROUTE_LAYER_ID, ROUTE_CASING_LAYER_ID]) {
+        if (map.getLayer(layerId)) {
+          map.removeLayer(layerId)
+        }
       }
 
       if (map.getSource(ROUTE_SOURCE_ID)) {
@@ -96,27 +99,35 @@ export function MapCanvas() {
 
       map.addSource(ROUTE_SOURCE_ID, { type: 'geojson', data: feature })
 
-      const firstSymbolLayer = map
-        .getStyle()
-        .layers.find((layer) => layer.type === 'symbol')?.id
-
-      map.addLayer(
-        {
-          id: ROUTE_LAYER_ID,
-          type: 'line',
-          source: ROUTE_SOURCE_ID,
-          layout: {
-            'line-cap': 'round',
-            'line-join': 'round',
-          },
-          paint: {
-            'line-color': '#2563eb',
-            'line-width': 5,
-            'line-opacity': 0.85,
-          },
+      map.addLayer({
+        id: ROUTE_CASING_LAYER_ID,
+        type: 'line',
+        source: ROUTE_SOURCE_ID,
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
         },
-        firstSymbolLayer,
-      )
+        paint: {
+          'line-color': '#ffffff',
+          'line-width': 9,
+          'line-opacity': 0.95,
+        },
+      })
+
+      map.addLayer({
+        id: ROUTE_LAYER_ID,
+        type: 'line',
+        source: ROUTE_SOURCE_ID,
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+        paint: {
+          'line-color': '#1d4ed8',
+          'line-width': 5,
+          'line-opacity': 1,
+        },
+      })
 
       const firstCoordinate = route.geometry.coordinates[0]
       const bounds = new maplibregl.LngLatBounds(
@@ -192,6 +203,11 @@ export function MapCanvas() {
           requestId: requestNumber,
           route,
         })
+        originMarker?.setLngLat([route.origin.longitude, route.origin.latitude])
+        destinationMarker?.setLngLat([
+          route.destination.longitude,
+          route.destination.latitude,
+        ])
         drawRoute(route)
       } catch (error) {
         if (disposed || requestNumber !== activeRequest) {

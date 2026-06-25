@@ -41,3 +41,17 @@ def test_does_not_travel_backwards_on_a_one_way_edge() -> None:
     result = shortest_path(graph, start=2, end=1)
 
     assert result is None
+
+
+def test_finds_path_using_extra_edges() -> None:
+    graph = {
+        1: [Edge(id=1, source=1, target=2, cost=5)],
+        2: [],
+        -1: [],
+    }
+
+    extra_edges = {-1: (Edge(id=-1, source=-1, target=1, cost=2),)}
+
+    result = shortest_path(graph, start=-1, end=2, extra_edges=extra_edges)
+
+    assert result == Path(nodes=(-1, 1, 2), edge_ids=(-1, 1), total_cost=7)

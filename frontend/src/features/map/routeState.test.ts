@@ -16,12 +16,12 @@ const destination: Coordinate = {
 const route: RouteResponse = {
   origin: {
     ...origin,
-    node_id: 1,
+    edge_id: 1,
     snap_distance_meters: 12,
   },
   destination: {
     ...destination,
-    node_id: 2,
+    edge_id: 2,
     snap_distance_meters: 18,
   },
   distance_meters: 1500,

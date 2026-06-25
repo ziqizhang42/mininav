@@ -30,20 +30,20 @@ class RouteView(APIView):
 
         response_data = {
             "origin": {
-                "node_id": route.origin.node_id,
+                "edge_id": route.origin.edge_id,
                 "longitude": route.origin.longitude,
                 "latitude": route.origin.latitude,
                 "snap_distance_meters": route.origin.distance_meters,
             },
             "destination": {
-                "node_id": route.destination.node_id,
+                "edge_id": route.destination.edge_id,
                 "longitude": route.destination.longitude,
                 "latitude": route.destination.latitude,
                 "snap_distance_meters": route.destination.distance_meters,
             },
             "distance_meters": route.distance_meters,
             "duration_seconds": route.duration_seconds,
-            "edge_count": len(route.edge_ids),
+            "edge_count": sum(1 for edge_id in route.edge_ids if edge_id > 0),
             "geometry": route.geometry,
         }
 
