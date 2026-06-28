@@ -34,6 +34,50 @@ const route: RouteResponse = {
       [destination.longitude, destination.latitude],
     ],
   },
+  steps: [
+    {
+      sequence: 0,
+      instruction: 'Head east on 16 Avenue NW',
+      road_name: '16 Avenue NW',
+      distance_meters: 1500,
+      duration_seconds: 420,
+      maneuver: {
+        type: 'depart',
+        modifier: 'east',
+        location: [origin.longitude, origin.latitude],
+        bearing_before: null,
+        bearing_after: 90,
+      },
+      geometry: {
+        type: 'LineString',
+        coordinates: [
+          [origin.longitude, origin.latitude],
+          [destination.longitude, destination.latitude],
+        ],
+      },
+    },
+    {
+      sequence: 1,
+      instruction: 'Arrive at destination',
+      road_name: null,
+      distance_meters: 0,
+      duration_seconds: 0,
+      maneuver: {
+        type: 'arrive',
+        modifier: null,
+        location: [destination.longitude, destination.latitude],
+        bearing_before: 90,
+        bearing_after: null,
+      },
+      geometry: {
+        type: 'LineString',
+        coordinates: [
+          [destination.longitude, destination.latitude],
+          [destination.longitude, destination.latitude],
+        ],
+      },
+    },
+  ],
 }
 
 function loadingState(requestId = 1): RouteState {

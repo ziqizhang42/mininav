@@ -12,16 +12,37 @@ const snappedCoordinateSchema = coordinateSchema.extend({
   snap_distance_meters: z.number().nonnegative(),
 })
 
+const routeGeometrySchema = z.object({
+  type: z.literal('LineString'),
+  coordinates: z.array(z.tuple([z.number(), z.number()])).min(2),
+})
+
+const maneuverSchema = z.object({
+  type: z.enum(['depart', 'turn', 'continue', 'arrive']),
+  modifier: z.string().nullable(),
+  location: z.tuple([z.number(), z.number()]),
+  bearing_before: z.number().nullable(),
+  bearing_after: z.number().nullable(),
+})
+
+const routeStepSchema = z.object({
+  sequence: z.number().int().nonnegative(),
+  instruction: z.string(),
+  road_name: z.string().nullable(),
+  distance_meters: z.number().nonnegative(),
+  duration_seconds: z.number().nonnegative(),
+  maneuver: maneuverSchema,
+  geometry: routeGeometrySchema,
+})
+
 const routeResponseSchema = z.object({
   origin: snappedCoordinateSchema,
   destination: snappedCoordinateSchema,
   distance_meters: z.number().nonnegative(),
   duration_seconds: z.number().nonnegative(),
   edge_count: z.number().int().nonnegative(),
-  geometry: z.object({
-    type: z.literal('LineString'),
-    coordinates: z.array(z.tuple([z.number(), z.number()])).min(2),
-  }),
+  geometry: routeGeometrySchema,
+  steps: z.array(routeStepSchema),
 })
 
 export type Coordinate = z.infer<typeof coordinateSchema>

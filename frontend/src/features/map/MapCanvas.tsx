@@ -241,7 +241,7 @@ export function MapCanvas() {
   }, [])
 
   return (
-    <div className="relative min-h-0 w-full flex-1">
+    <div className="relative min-h-0 w-full flex-1 overflow-hidden">
       <div
         ref={containerRef}
         className="h-full w-full"
@@ -249,7 +249,7 @@ export function MapCanvas() {
       />
 
       <section
-        className="absolute top-4 left-4 z-10 max-w-sm rounded-md border bg-white/95 px-4 py-3 text-sm shadow-sm"
+        className="absolute top-4 right-4 left-4 z-10 flex max-h-[calc(100%-2rem)] flex-col overflow-hidden rounded-md border bg-white/95 px-4 py-3 text-sm shadow-sm sm:right-auto sm:w-96 sm:max-w-sm"
         aria-live="polite"
       >
         {routeState.status === 'idle' && <p>Click a start point.</p>}
@@ -265,12 +265,33 @@ export function MapCanvas() {
         )}
 
         {routeState.status === 'success' && (
-          <div className="space-y-1">
-            <p className="font-medium">Route ready</p>
-            <p>
-              {formatDistance(routeState.route.distance_meters)} ·{' '}
-              {formatDuration(routeState.route.duration_seconds)}
-            </p>
+          <div className="flex min-h-0 flex-col gap-3">
+            <div className="space-y-1">
+              <p className="font-medium">Route ready</p>
+              <p>
+                {formatDistance(routeState.route.distance_meters)} ·{' '}
+                {formatDuration(routeState.route.duration_seconds)}
+              </p>
+            </div>
+
+            <ol
+              className="-mx-1 min-h-0 space-y-2 overflow-y-auto px-1"
+              aria-label="Route instructions"
+            >
+              {routeState.route.steps.map((step) => (
+                <li
+                  key={step.sequence}
+                  className="border-t pt-2 first:border-t-0 first:pt-0"
+                >
+                  <p>{step.instruction}</p>
+                  {step.distance_meters > 0 && (
+                    <p className="text-xs text-slate-500">
+                      {formatDistance(step.distance_meters)}
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ol>
           </div>
         )}
       </section>

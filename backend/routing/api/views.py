@@ -45,6 +45,24 @@ class RouteView(APIView):
             "duration_seconds": route.duration_seconds,
             "edge_count": sum(1 for edge_id in route.edge_ids if edge_id > 0),
             "geometry": route.geometry,
+            "steps": [
+                {
+                    "sequence": step.sequence,
+                    "instruction": step.instruction,
+                    "road_name": step.road_name,
+                    "distance_meters": step.distance_meters,
+                    "duration_seconds": step.duration_seconds,
+                    "maneuver": {
+                        "type": step.maneuver.type,
+                        "modifier": step.maneuver.modifier,
+                        "location": step.maneuver.location,
+                        "bearing_before": step.maneuver.bearing_before,
+                        "bearing_after": step.maneuver.bearing_after,
+                    },
+                    "geometry": step.geometry,
+                }
+                for step in route.steps
+            ],
         }
 
         response_serializer = RouteResponseSerializer(response_data)

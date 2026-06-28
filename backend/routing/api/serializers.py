@@ -29,6 +29,28 @@ class GeometrySerializer(serializers.Serializer):
     )
 
 
+class ManeuverSerializer(serializers.Serializer):
+    type = serializers.ChoiceField(choices=["depart", "turn", "continue", "arrive"])
+    modifier = serializers.CharField(allow_null=True)
+    location = serializers.ListField(
+        child=serializers.FloatField(),
+        min_length=2,
+        max_length=2,
+    )
+    bearing_before = serializers.FloatField(allow_null=True)
+    bearing_after = serializers.FloatField(allow_null=True)
+
+
+class RouteStepSerializer(serializers.Serializer):
+    sequence = serializers.IntegerField()
+    instruction = serializers.CharField()
+    road_name = serializers.CharField(allow_null=True)
+    distance_meters = serializers.FloatField()
+    duration_seconds = serializers.FloatField()
+    maneuver = ManeuverSerializer()
+    geometry = GeometrySerializer()
+
+
 class RouteResponseSerializer(serializers.Serializer):
     origin = SnappedCoordinateSerializer()
     destination = SnappedCoordinateSerializer()
@@ -36,3 +58,4 @@ class RouteResponseSerializer(serializers.Serializer):
     duration_seconds = serializers.FloatField()
     edge_count = serializers.IntegerField()
     geometry = GeometrySerializer()
+    steps = RouteStepSerializer(many=True)

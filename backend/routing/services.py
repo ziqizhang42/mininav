@@ -6,6 +6,7 @@ from django.db import connection
 
 from routing.dijkstra import shortest_path
 from routing.graph import Edge, Graph
+from routing.instructions import RouteSegment, RouteStep, build_route_steps
 from routing.loaders import load_graph_from_database
 from routing.models import RoadEdge
 from routing.snapping import SnappedEdge, nearest_edge
@@ -33,12 +34,15 @@ class RouteResult:
     distance_meters: float
     duration_seconds: float
     geometry: dict[str, object]
+    steps: tuple[RouteStep, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class VirtualRouteEdge:
     coordinates: list[list[float]]
     length_meters: float
+    cost_seconds: float
+    metadata_edge_id: int
 
 
 @lru_cache(maxsize=1)
@@ -81,6 +85,9 @@ def calculate_route(
             [destination.longitude, destination.latitude],
         ]
 
+    segments = build_route_segments(path.edge_ids, virtual_route_edges)
+    steps = build_route_steps(segments)
+
     return RouteResult(
         origin=origin,
         destination=destination,
@@ -92,6 +99,7 @@ def calculate_route(
             "type": "LineString",
             "coordinates": coordinates,
         },
+        steps=steps,
     )
 
 
@@ -148,6 +156,8 @@ def build_origin_connector_edges(
         ORIGIN_TO_TARGET_EDGE_ID: VirtualRouteEdge(
             coordinates=edge_substring(origin.edge_id, origin.fraction, 1),
             length_meters=origin.length_meters * (1 - origin.fraction),
+            cost_seconds=origin.cost_seconds * (1 - origin.fraction),
+            metadata_edge_id=origin.edge_id,
         ),
     }
 
@@ -169,6 +179,8 @@ def build_origin_connector_edges(
                 reversed(edge_substring(origin.edge_id, 0, origin.fraction))
             ),
             length_meters=origin.length_meters * origin.fraction,
+            cost_seconds=origin.cost_seconds * origin.fraction,
+            metadata_edge_id=origin.edge_id,
         )
 
     return tuple(edges), virtual_edges
@@ -192,6 +204,8 @@ def build_destination_connector_edges(
         SOURCE_TO_DESTINATION_EDGE_ID: VirtualRouteEdge(
             coordinates=edge_substring(destination.edge_id, 0, destination.fraction),
             length_meters=destination.length_meters * destination.fraction,
+            cost_seconds=destination.cost_seconds * destination.fraction,
+            metadata_edge_id=destination.edge_id,
         ),
     }
 
@@ -213,6 +227,8 @@ def build_destination_connector_edges(
                 reversed(edge_substring(destination.edge_id, destination.fraction, 1))
             ),
             length_meters=destination.length_meters * (1 - destination.fraction),
+            cost_seconds=destination.cost_seconds * (1 - destination.fraction),
+            metadata_edge_id=destination.edge_id,
         )
 
     return tuple(edges), virtual_edges
@@ -265,6 +281,8 @@ def add_direct_edges(
             ),
             length_meters=origin.length_meters
             * (destination_fraction_on_origin - origin.fraction),
+            cost_seconds=direct_cost,
+            metadata_edge_id=origin.edge_id,
         )
 
     if (
@@ -299,6 +317,8 @@ def add_direct_edges(
             ),
             length_meters=origin.length_meters
             * (origin.fraction - destination_fraction_on_origin),
+            cost_seconds=direct_cost,
+            metadata_edge_id=origin.edge_id,
         )
 
 
@@ -335,6 +355,77 @@ def build_route_geometry(
         append_edge_coordinates(coordinates, edge_coordinates, edge_id)
 
     return coordinates, distance
+
+
+def build_route_segments(
+    edge_ids: tuple[int, ...],
+    virtual_route_edges: dict[int, VirtualRouteEdge],
+) -> list[RouteSegment]:
+    real_edge_ids = [edge_id for edge_id in edge_ids if edge_id > 0]
+    metadata_edge_ids = [
+        virtual_route_edges[edge_id].metadata_edge_id
+        for edge_id in edge_ids
+        if edge_id < 0
+    ]
+
+    edges = RoadEdge.objects.filter(id__in=[*real_edge_ids, *metadata_edge_ids]).only(
+        "id",
+        "osm_way_id",
+        "name",
+        "road_class",
+        "geometry",
+        "length_meters",
+        "cost_seconds",
+    )
+    edges_by_id = {edge.id: edge for edge in edges}
+
+    segments: list[RouteSegment] = []
+
+    for edge_id in edge_ids:
+        if edge_id < 0:
+            route_edge = virtual_route_edges[edge_id]
+            metadata_edge = edges_by_id.get(route_edge.metadata_edge_id)
+
+            if metadata_edge is None:
+                raise RuntimeError(f"Missing route edge: {route_edge.metadata_edge_id}")
+
+            coordinates = route_edge.coordinates
+            distance_meters = route_edge.length_meters
+            duration_seconds = route_edge.cost_seconds
+            osm_way_id = metadata_edge.osm_way_id
+            road_name = metadata_edge.name
+            road_class = metadata_edge.road_class
+        else:
+            edge = edges_by_id.get(edge_id)
+
+            if edge is None:
+                raise RuntimeError(f"Missing route edge: {edge_id}")
+
+            coordinates = [
+                [longitude, latitude] for longitude, latitude in edge.geometry.coords
+            ]
+            distance_meters = edge.length_meters
+            duration_seconds = edge.cost_seconds
+            osm_way_id = edge.osm_way_id
+            road_name = edge.name
+            road_class = edge.road_class
+
+        if distance_meters <= 0 or len(coordinates) < 2:
+            continue
+
+        segments.append(
+            RouteSegment(
+                edge_id=edge_id,
+                osm_way_id=osm_way_id,
+                road_name=road_name,
+                road_class=road_class,
+                distance_meters=distance_meters,
+                duration_seconds=duration_seconds,
+                coordinates=coordinates,
+            )
+        )
+
+    return segments
 
 
 def append_edge_coordinates(
