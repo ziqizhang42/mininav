@@ -130,6 +130,8 @@ describe('routeReducer', () => {
       origin,
       destination,
       route,
+      isRerouting: false,
+      rerouteRequestId: null,
     })
   })
 
@@ -182,6 +184,8 @@ describe('routeReducer', () => {
           origin,
           destination,
           route,
+          isRerouting: false,
+          rerouteRequestId: null,
         },
         { type: 'resetRequested' },
       ),
@@ -196,5 +200,50 @@ describe('routeReducer', () => {
         { type: 'resetRequested' },
       ),
     ).toEqual(initialRouteState)
+  })
+
+  it('keeps the old route while rerouting and replaces it after success', () => {
+    const success = routeReducer(loadingState(1), {
+      type: 'routeSucceeded',
+      requestId: 1,
+      route,
+    })
+
+    const rerouting = routeReducer(success, {
+      type: 'rerouteRequested',
+      requestId: 2,
+    })
+
+    expect(rerouting).toEqual({
+      ...success,
+      isRerouting: true,
+      rerouteRequestId: 2,
+      rerouteError: undefined,
+    })
+
+    const reroutedRoute = {
+      ...route,
+      origin: {
+        ...route.origin,
+        longitude: -114.05,
+      },
+      distance_meters: 900,
+    }
+
+    expect(
+      routeReducer(rerouting, {
+        type: 'rerouteSucceeded',
+        requestId: 2,
+        route: reroutedRoute,
+      }),
+    ).toEqual({
+      status: 'success',
+      origin: reroutedRoute.origin,
+      destination,
+      route: reroutedRoute,
+      isRerouting: false,
+      rerouteRequestId: null,
+      rerouteError: undefined,
+    })
   })
 })

@@ -14,6 +14,9 @@ export type RouteState =
       origin: Coordinate
       destination: Coordinate
       route: RouteResponse
+      isRerouting: boolean
+      rerouteRequestId: number | null
+      rerouteError?: string
     }
   | { status: 'error'; message: string }
 
@@ -28,6 +31,9 @@ export type RouteEvent =
     }
   | { type: 'routeSucceeded'; requestId: number; route: RouteResponse }
   | { type: 'routeFailed'; requestId: number; message: string }
+  | { type: 'rerouteRequested'; requestId: number }
+  | { type: 'rerouteSucceeded'; requestId: number; route: RouteResponse }
+  | { type: 'rerouteFailed'; requestId: number; message: string }
 
 export const initialRouteState: RouteState = { status: 'idle' }
 
@@ -60,6 +66,8 @@ export function routeReducer(state: RouteState, event: RouteEvent): RouteState {
         origin: state.origin,
         destination: state.destination,
         route: event.route,
+        isRerouting: false,
+        rerouteRequestId: null,
       }
 
     case 'routeFailed':
@@ -70,6 +78,50 @@ export function routeReducer(state: RouteState, event: RouteEvent): RouteState {
       return {
         status: 'error',
         message: event.message,
+      }
+
+    case 'rerouteRequested':
+      if (state.status !== 'success') {
+        return state
+      }
+
+      return {
+        ...state,
+        isRerouting: true,
+        rerouteRequestId: event.requestId,
+        rerouteError: undefined,
+      }
+
+    case 'rerouteSucceeded':
+      if (
+        state.status !== 'success' ||
+        state.rerouteRequestId !== event.requestId
+      ) {
+        return state
+      }
+
+      return {
+        ...state,
+        origin: event.route.origin,
+        route: event.route,
+        isRerouting: false,
+        rerouteRequestId: null,
+        rerouteError: undefined,
+      }
+
+    case 'rerouteFailed':
+      if (
+        state.status !== 'success' ||
+        state.rerouteRequestId !== event.requestId
+      ) {
+        return state
+      }
+
+      return {
+        ...state,
+        isRerouting: false,
+        rerouteRequestId: null,
+        rerouteError: event.message,
       }
   }
 }

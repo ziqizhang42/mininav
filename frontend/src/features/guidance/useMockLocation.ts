@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react'
 
 import type { RouteResponse } from '../routing/api'
 import {
+  calculateGuidanceProgress,
   coordinateAlongRoute,
   offsetCoordinateMeters,
   routeLengthMeters,
@@ -26,49 +27,48 @@ function mockTrackedLocation(
 
 export function useMockLocation() {
   const [location, setLocation] = useState<TrackedLocation | null>(null)
-  const [alongMeters, setAlongMeters] = useState(0)
 
   const setCalgaryLocation = useCallback(() => {
-    setAlongMeters(0)
     setLocation(mockTrackedLocation())
   }, [])
 
   const clear = useCallback(() => {
-    setAlongMeters(0)
     setLocation(null)
   }, [])
 
   const setRouteStart = useCallback((route: RouteResponse) => {
-    setAlongMeters(0)
     setLocation(mockTrackedLocation(coordinateAlongRoute(route, 0)))
   }, [])
 
   const advanceAlongRoute = useCallback(
     (route: RouteResponse) => {
-      const nextAlongMeters = Math.min(
-        routeLengthMeters(route),
-        alongMeters + 100,
-      )
-      setAlongMeters(nextAlongMeters)
+      const routeMeters = routeLengthMeters(route)
+      const currentAlongMeters = progressAlongRoute(route, location)
+      const nextAlongMeters = Math.min(routeMeters, currentAlongMeters + 100)
+
       setLocation(
         mockTrackedLocation(coordinateAlongRoute(route, nextAlongMeters)),
       )
     },
-    [alongMeters],
+    [location],
   )
 
-  const setOffRoute = useCallback((route: RouteResponse) => {
-    const midpoint = routeLengthMeters(route) / 2
-    const coordinate = coordinateAlongRoute(route, midpoint)
-    setAlongMeters(midpoint)
-    setLocation(
-      mockTrackedLocation(offsetCoordinateMeters(coordinate, 120, 120)),
-    )
-  }, [])
+  const setOffRoute = useCallback(
+    (route: RouteResponse) => {
+      const currentAlongMeters = location
+        ? progressAlongRoute(route, location)
+        : routeLengthMeters(route) / 2
+      const coordinate = coordinateAlongRoute(route, currentAlongMeters)
+
+      setLocation(
+        mockTrackedLocation(offsetCoordinateMeters(coordinate, 120, 120)),
+      )
+    },
+    [location],
+  )
 
   const setNearDestination = useCallback((route: RouteResponse) => {
     const nearEnd = Math.max(0, routeLengthMeters(route) - 20)
-    setAlongMeters(nearEnd)
     setLocation(mockTrackedLocation(coordinateAlongRoute(route, nearEnd)))
   }, [])
 
@@ -81,4 +81,25 @@ export function useMockLocation() {
     setOffRoute,
     setNearDestination,
   }
+}
+
+function progressAlongRoute(
+  route: RouteResponse,
+  location: TrackedLocation | null,
+) {
+  if (!location) {
+    return 0
+  }
+
+  const routeMeters = routeLengthMeters(route)
+  const progress = calculateGuidanceProgress(
+    route,
+    location.coordinate,
+    location.accuracyMeters,
+  )
+
+  return Math.min(
+    routeMeters,
+    Math.max(0, routeMeters - progress.remainingMeters),
+  )
 }

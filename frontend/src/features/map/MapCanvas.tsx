@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react'
 import maplibregl from 'maplibre-gl'
 import { LocateFixed, Navigation } from 'lucide-react'
 
@@ -14,6 +21,7 @@ import { GuidancePanel } from '../guidance/GuidancePanel'
 import { calculateGuidanceProgress } from '../guidance/geo'
 import { useGeolocation } from '../guidance/useGeolocation'
 import { useWakeLock } from '../guidance/useWakeLock'
+import { useAutomaticRerouting } from '../guidance/useAutomaticRerouting'
 
 import { GuidanceDebugPanel } from '../guidance/GuidanceDebugPanel'
 import { trackedLocationFromGps } from '../guidance/locationSource'
@@ -30,6 +38,9 @@ export function MapCanvas() {
   const selectCurrentLocationAsOriginRef = useRef<
     ((coordinate: Coordinate) => void) | null
   >(null)
+  const replaceRouteOnMapRef = useRef<((route: RouteResponse) => void) | null>(
+    null,
+  )
   const [locationEnabled, setLocationEnabled] = useState(false)
   const [guidanceEnabled, setGuidanceEnabled] = useState(false)
   const location = useGeolocation(locationEnabled)
@@ -41,7 +52,17 @@ export function MapCanvas() {
   const trackedLocation = mockLocation.location ?? gpsTrackedLocation
   const [routeState, dispatch] = useReducer(routeReducer, initialRouteState)
   const routeStateRef = useRef(routeState)
+  const dispatchRoute = useCallback(
+    (event: RouteEvent) => {
+      routeStateRef.current = routeReducer(routeStateRef.current, event)
+      dispatch(event)
+    },
+    [dispatch],
+  )
   const activeRoute = routeState.status === 'success' ? routeState.route : null
+  const rerouteDestination =
+    routeState.status === 'success' ? routeState.destination : null
+  const isRerouting = routeState.status === 'success' && routeState.isRerouting
 
   const guidanceActive = guidanceEnabled && routeState.status === 'success'
   useWakeLock(guidanceActive)
@@ -61,6 +82,47 @@ export function MapCanvas() {
       trackedLocation.accuracyMeters,
     )
   }, [guidanceActive, routeState, trackedLocation])
+
+  const handleRerouteStarted = useCallback(
+    (requestId: number) => {
+      dispatchRoute({ type: 'rerouteRequested', requestId })
+    },
+    [dispatchRoute],
+  )
+
+  const handleRerouteSucceeded = useCallback(
+    (requestId: number, route: RouteResponse) => {
+      dispatchRoute({ type: 'rerouteSucceeded', requestId, route })
+
+      if (
+        routeStateRef.current.status === 'success' &&
+        routeStateRef.current.route === route
+      ) {
+        replaceRouteOnMapRef.current?.(route)
+      }
+    },
+    [dispatchRoute],
+  )
+
+  const handleRerouteFailed = useCallback(
+    (requestId: number, message: string) => {
+      dispatchRoute({ type: 'rerouteFailed', requestId, message })
+    },
+    [dispatchRoute],
+  )
+
+  useAutomaticRerouting({
+    enabled: guidanceActive,
+    route: activeRoute,
+    destination: rerouteDestination,
+    trackedLocation,
+    progress: guidanceProgress,
+    isRerouting,
+    requestRoute,
+    onRerouteStarted: handleRerouteStarted,
+    onRerouteSucceeded: handleRerouteSucceeded,
+    onRerouteFailed: handleRerouteFailed,
+  })
 
   useEffect(() => {
     routeStateRef.current = routeState
@@ -84,11 +146,6 @@ export function MapCanvas() {
     let destinationMarker: maplibregl.Marker | null = null
     let activeRequest = 0
     let disposed = false
-
-    function dispatchRoute(event: RouteEvent) {
-      routeStateRef.current = routeReducer(routeStateRef.current, event)
-      dispatch(event)
-    }
 
     map.on('style.load', () => {
       map.addLayer({
@@ -153,44 +210,52 @@ export function MapCanvas() {
       })
     }
 
-    function drawRoute(route: RouteResponse) {
+    function drawRoute(
+      route: RouteResponse,
+      options: { fitBounds?: boolean } = {},
+    ) {
+      const { fitBounds = true } = options
       const feature = {
         type: 'Feature' as const,
         properties: {},
         geometry: route.geometry,
       }
 
-      map.addSource(ROUTE_SOURCE_ID, { type: 'geojson', data: feature })
+      const routeSource = map.getSource(ROUTE_SOURCE_ID) as
+        | maplibregl.GeoJSONSource
+        | undefined
 
-      map.addLayer({
-        id: ROUTE_CASING_LAYER_ID,
-        type: 'line',
-        source: ROUTE_SOURCE_ID,
-        layout: {
-          'line-cap': 'round',
-          'line-join': 'round',
-        },
-        paint: {
-          'line-color': '#ffffff',
-          'line-width': 9,
-          'line-opacity': 0.95,
-        },
-      })
+      if (routeSource) {
+        routeSource.setData(feature)
+      } else {
+        map.addSource(ROUTE_SOURCE_ID, { type: 'geojson', data: feature })
 
-      map.addLayer({
-        id: ROUTE_LAYER_ID,
-        type: 'line',
-        source: ROUTE_SOURCE_ID,
-        layout: {
-          'line-cap': 'round',
-          'line-join': 'round',
-        },
-        paint: {
-          'line-color': '#1d4ed8',
-          'line-width': 5,
-          'line-opacity': 1,
-        },
-      })
+        map.addLayer({
+          id: ROUTE_CASING_LAYER_ID,
+          type: 'line',
+          source: ROUTE_SOURCE_ID,
+          layout: { 'line-cap': 'round', 'line-join': 'round' },
+          paint: {
+            'line-color': '#ffffff',
+            'line-width': 9,
+            'line-opacity': 0.95,
+          },
+        })
+
+        map.addLayer({
+          id: ROUTE_LAYER_ID,
+          type: 'line',
+          source: ROUTE_SOURCE_ID,
+          layout: { 'line-cap': 'round', 'line-join': 'round' },
+          paint: {
+            'line-color': '#1d4ed8',
+            'line-width': 5,
+            'line-opacity': 1,
+          },
+        })
+      }
+
+      if (!fitBounds) return
 
       const firstCoordinate = route.geometry.coordinates[0]
       const bounds = new maplibregl.LngLatBounds(
@@ -202,10 +267,16 @@ export function MapCanvas() {
         bounds.extend(coordinate)
       }
 
-      map.fitBounds(bounds, {
-        padding: 60,
-        duration: 800,
-      })
+      map.fitBounds(bounds, { padding: 60, duration: 800 })
+    }
+
+    replaceRouteOnMapRef.current = (route: RouteResponse) => {
+      originMarker?.setLngLat([route.origin.longitude, route.origin.latitude])
+      destinationMarker?.setLngLat([
+        route.destination.longitude,
+        route.destination.latitude,
+      ])
+      drawRoute(route, { fitBounds: false })
     }
 
     function handleKeyDown(event: KeyboardEvent) {
@@ -302,10 +373,11 @@ export function MapCanvas() {
       userLocationMarkerRef.current?.remove()
       userLocationMarkerRef.current = null
       selectCurrentLocationAsOriginRef.current = null
+      replaceRouteOnMapRef.current = null
       mapRef.current = null
       map.remove()
     }
-  }, [])
+  }, [dispatchRoute])
 
   useEffect(() => {
     const map = mapRef.current
@@ -438,7 +510,9 @@ export function MapCanvas() {
         {routeState.status === 'success' && (
           <div className="flex min-h-0 flex-col gap-3">
             <div className="space-y-1">
-              <p className="font-medium">Route ready</p>
+              <p className="font-medium">
+                {routeState.isRerouting ? 'Rerouting...' : 'Route ready'}
+              </p>
               <p>
                 {formatDistance(routeState.route.distance_meters)} ·{' '}
                 {formatDuration(routeState.route.duration_seconds)}
@@ -468,7 +542,11 @@ export function MapCanvas() {
               )}
 
               {guidanceProgress && (
-                <GuidancePanel progress={guidanceProgress} />
+                <GuidancePanel
+                  progress={guidanceProgress}
+                  isRerouting={routeState.isRerouting}
+                  rerouteError={routeState.rerouteError}
+                />
               )}
             </div>
 
