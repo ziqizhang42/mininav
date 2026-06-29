@@ -1,5 +1,6 @@
-import { useEffect, useReducer, useRef } from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
+import { LocateFixed, Navigation } from 'lucide-react'
 
 import {
   requestRoute,
@@ -9,14 +10,57 @@ import {
 
 import { initialRouteState, routeReducer, type RouteEvent } from './routeState'
 
+import { GuidancePanel } from '../guidance/GuidancePanel'
+import { calculateGuidanceProgress } from '../guidance/geo'
+import { useGeolocation } from '../guidance/useGeolocation'
+import { useWakeLock } from '../guidance/useWakeLock'
+
+import { GuidanceDebugPanel } from '../guidance/GuidanceDebugPanel'
+import { trackedLocationFromGps } from '../guidance/locationSource'
+import { useMockLocation } from '../guidance/useMockLocation'
+
 const ROUTE_SOURCE_ID = 'route'
 const ROUTE_CASING_LAYER_ID = 'route-casing'
 const ROUTE_LAYER_ID = 'route-line'
 
 export function MapCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
+  const mapRef = useRef<maplibregl.Map | null>(null)
+  const userLocationMarkerRef = useRef<maplibregl.Marker | null>(null)
+  const selectCurrentLocationAsOriginRef = useRef<
+    ((coordinate: Coordinate) => void) | null
+  >(null)
+  const [locationEnabled, setLocationEnabled] = useState(false)
+  const [guidanceEnabled, setGuidanceEnabled] = useState(false)
+  const location = useGeolocation(locationEnabled)
+  const mockLocation = useMockLocation()
+  const gpsTrackedLocation = useMemo(
+    () => trackedLocationFromGps(location),
+    [location],
+  )
+  const trackedLocation = mockLocation.location ?? gpsTrackedLocation
   const [routeState, dispatch] = useReducer(routeReducer, initialRouteState)
   const routeStateRef = useRef(routeState)
+  const activeRoute = routeState.status === 'success' ? routeState.route : null
+
+  const guidanceActive = guidanceEnabled && routeState.status === 'success'
+  useWakeLock(guidanceActive)
+
+  const guidanceProgress = useMemo(() => {
+    if (
+      !guidanceActive ||
+      routeState.status !== 'success' ||
+      !trackedLocation
+    ) {
+      return null
+    }
+
+    return calculateGuidanceProgress(
+      routeState.route,
+      trackedLocation.coordinate,
+      trackedLocation.accuracyMeters,
+    )
+  }, [guidanceActive, routeState, trackedLocation])
 
   useEffect(() => {
     routeStateRef.current = routeState
@@ -33,6 +77,8 @@ export function MapCanvas() {
       center: [-114.0719, 51.0447],
       zoom: 10,
     })
+
+    mapRef.current = map
 
     let originMarker: maplibregl.Marker | null = null
     let destinationMarker: maplibregl.Marker | null = null
@@ -87,7 +133,24 @@ export function MapCanvas() {
         map.removeSource(ROUTE_SOURCE_ID)
       }
 
+      setGuidanceEnabled(false)
       dispatchRoute({ type: 'resetRequested' })
+    }
+
+    selectCurrentLocationAsOriginRef.current = (coordinate: Coordinate) => {
+      clearRoute()
+
+      originMarker = new maplibregl.Marker({ color: '#16a34a' })
+        .setLngLat([coordinate.longitude, coordinate.latitude])
+        .addTo(map)
+
+      dispatchRoute({ type: 'originSelected', origin: coordinate })
+
+      map.easeTo({
+        center: [coordinate.longitude, coordinate.latitude],
+        zoom: Math.max(map.getZoom(), 15),
+        duration: 500,
+      })
     }
 
     function drawRoute(route: RouteResponse) {
@@ -236,9 +299,50 @@ export function MapCanvas() {
       window.removeEventListener('keydown', handleKeyDown)
       originMarker?.remove()
       destinationMarker?.remove()
+      userLocationMarkerRef.current?.remove()
+      userLocationMarkerRef.current = null
+      selectCurrentLocationAsOriginRef.current = null
+      mapRef.current = null
       map.remove()
     }
   }, [])
+
+  useEffect(() => {
+    const map = mapRef.current
+
+    if (!map) {
+      return
+    }
+
+    if (!trackedLocation) {
+      userLocationMarkerRef.current?.remove()
+      userLocationMarkerRef.current = null
+      return
+    }
+
+    const lngLat: [number, number] = [
+      trackedLocation.coordinate.longitude,
+      trackedLocation.coordinate.latitude,
+    ]
+
+    if (!userLocationMarkerRef.current) {
+      userLocationMarkerRef.current = new maplibregl.Marker({
+        color: '#2563eb',
+      })
+        .setLngLat(lngLat)
+        .addTo(map)
+    } else {
+      userLocationMarkerRef.current.setLngLat(lngLat)
+    }
+
+    if (guidanceActive) {
+      map.easeTo({
+        center: lngLat,
+        zoom: Math.max(map.getZoom(), 15),
+        duration: 500,
+      })
+    }
+  }, [guidanceActive, trackedLocation])
 
   return (
     <div className="relative min-h-0 w-full flex-1 overflow-hidden">
@@ -252,7 +356,74 @@ export function MapCanvas() {
         className="absolute top-4 right-4 left-4 z-10 flex max-h-[calc(100%-2rem)] flex-col overflow-hidden rounded-md border bg-white/95 px-4 py-3 text-sm shadow-sm sm:right-auto sm:w-96 sm:max-w-sm"
         aria-live="polite"
       >
-        {routeState.status === 'idle' && <p>Click a start point.</p>}
+        <div className="mb-3 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 font-medium"
+              onClick={() => setLocationEnabled(true)}
+            >
+              <LocateFixed size={16} />
+              Locate
+            </button>
+
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 font-medium disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!trackedLocation}
+              onClick={() => {
+                if (!trackedLocation) {
+                  setLocationEnabled(true)
+                  return
+                }
+
+                selectCurrentLocationAsOriginRef.current?.(
+                  trackedLocation.coordinate,
+                )
+              }}
+            >
+              Use as start
+            </button>
+
+            {!mockLocation.location && location.status === 'locating' && (
+              <p className="text-xs text-slate-500">Locating...</p>
+            )}
+
+            {trackedLocation?.source === 'mock' && (
+              <p className="text-xs text-slate-500">Mock GPS ready</p>
+            )}
+
+            {trackedLocation?.source === 'gps' && (
+              <p className="text-xs text-slate-500">
+                GPS ready · ±{Math.round(trackedLocation.accuracyMeters)} m
+              </p>
+            )}
+
+            {!mockLocation.location && location.status === 'unsupported' && (
+              <p className="text-xs text-red-700">Location is not supported.</p>
+            )}
+
+            {!mockLocation.location && location.status === 'error' && (
+              <p className="text-xs text-red-700">{location.message}</p>
+            )}
+          </div>
+
+          {import.meta.env.DEV && (
+            <GuidanceDebugPanel
+              route={activeRoute}
+              mockLocation={mockLocation.location}
+              onSetCalgary={mockLocation.setCalgaryLocation}
+              onClear={mockLocation.clear}
+              onSetRouteStart={mockLocation.setRouteStart}
+              onAdvance={mockLocation.advanceAlongRoute}
+              onSetOffRoute={mockLocation.setOffRoute}
+              onSetNearDestination={mockLocation.setNearDestination}
+            />
+          )}
+        </div>
+        {routeState.status === 'idle' && (
+          <p>Click a start point, or use your current location.</p>
+        )}
 
         {routeState.status === 'selecting-destination' && (
           <p>Click a destination.</p>
@@ -272,6 +443,33 @@ export function MapCanvas() {
                 {formatDistance(routeState.route.distance_meters)} ·{' '}
                 {formatDuration(routeState.route.duration_seconds)}
               </p>
+            </div>
+
+            <div className="space-y-2">
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 rounded-md bg-blue-700 px-3 py-2 font-medium text-white disabled:bg-slate-300"
+                onClick={() => {
+                  if (guidanceEnabled) {
+                    setGuidanceEnabled(false)
+                    return
+                  }
+
+                  setLocationEnabled(true)
+                  setGuidanceEnabled(true)
+                }}
+              >
+                <Navigation size={16} />
+                {guidanceEnabled ? 'Stop guidance' : 'Start guidance'}
+              </button>
+
+              {guidanceEnabled && !trackedLocation && (
+                <p className="text-xs text-slate-500">Waiting for GPS...</p>
+              )}
+
+              {guidanceProgress && (
+                <GuidancePanel progress={guidanceProgress} />
+              )}
             </div>
 
             <ol
