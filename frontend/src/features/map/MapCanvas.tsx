@@ -7,7 +7,7 @@ import {
   useState,
 } from 'react'
 import maplibregl from 'maplibre-gl'
-import { LocateFixed, Navigation } from 'lucide-react'
+import { ChevronDown, ChevronUp, LocateFixed, Navigation } from 'lucide-react'
 
 import {
   requestRoute,
@@ -17,7 +17,7 @@ import {
 
 import { initialRouteState, routeReducer, type RouteEvent } from './routeState'
 
-import { GuidancePanel } from '../guidance/GuidancePanel'
+import { RouteInstructionList } from '../guidance/RouteInstructionList'
 import { calculateGuidanceProgress } from '../guidance/geo'
 import { useGeolocation } from '../guidance/useGeolocation'
 import { useWakeLock } from '../guidance/useWakeLock'
@@ -41,6 +41,7 @@ export function MapCanvas() {
   const replaceRouteOnMapRef = useRef<((route: RouteResponse) => void) | null>(
     null,
   )
+  const [detailsExpanded, setDetailsExpanded] = useState(false)
   const [locationEnabled, setLocationEnabled] = useState(false)
   const [guidanceEnabled, setGuidanceEnabled] = useState(false)
   const location = useGeolocation(locationEnabled)
@@ -425,10 +426,10 @@ export function MapCanvas() {
       />
 
       <section
-        className="absolute top-4 right-4 left-4 z-10 flex max-h-[calc(100%-2rem)] flex-col overflow-hidden rounded-md border bg-white/95 px-4 py-3 text-sm shadow-sm sm:right-auto sm:w-96 sm:max-w-sm"
+        className={`absolute right-3 bottom-3 left-3 z-10 flex flex-col overflow-hidden rounded-lg border bg-white/95 px-3 py-3 text-sm shadow-lg backdrop-blur sm:top-4 sm:right-auto sm:bottom-auto sm:left-4 sm:max-h-[calc(100%-2rem)] sm:w-96 sm:max-w-sm sm:px-4 ${detailsExpanded ? 'max-h-[72dvh]' : 'max-h-[32dvh]'}`}
         aria-live="polite"
       >
-        <div className="mb-3 space-y-3">
+        <div className="mb-3 shrink-0 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -481,16 +482,24 @@ export function MapCanvas() {
           </div>
 
           {import.meta.env.DEV && (
-            <GuidanceDebugPanel
-              route={activeRoute}
-              mockLocation={mockLocation.location}
-              onSetCalgary={mockLocation.setCalgaryLocation}
-              onClear={mockLocation.clear}
-              onSetRouteStart={mockLocation.setRouteStart}
-              onAdvance={mockLocation.advanceAlongRoute}
-              onSetOffRoute={mockLocation.setOffRoute}
-              onSetNearDestination={mockLocation.setNearDestination}
-            />
+            <div
+              className={
+                routeState.status === 'success' && !detailsExpanded
+                  ? 'hidden sm:block'
+                  : undefined
+              }
+            >
+              <GuidanceDebugPanel
+                route={activeRoute}
+                mockLocation={mockLocation.location}
+                onSetCalgary={mockLocation.setCalgaryLocation}
+                onClear={mockLocation.clear}
+                onSetRouteStart={mockLocation.setRouteStart}
+                onAdvance={mockLocation.advanceAlongRoute}
+                onSetOffRoute={mockLocation.setOffRoute}
+                onSetNearDestination={mockLocation.setNearDestination}
+              />
+            </div>
           )}
         </div>
         {routeState.status === 'idle' && (
@@ -509,14 +518,35 @@ export function MapCanvas() {
 
         {routeState.status === 'success' && (
           <div className="flex min-h-0 flex-col gap-3">
-            <div className="space-y-1">
-              <p className="font-medium">
-                {routeState.isRerouting ? 'Rerouting...' : 'Route ready'}
-              </p>
-              <p>
-                {formatDistance(routeState.route.distance_meters)} ·{' '}
-                {formatDuration(routeState.route.duration_seconds)}
-              </p>
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <p className="font-medium">
+                  {routeState.isRerouting ? 'Rerouting...' : 'Route ready'}
+                </p>
+                <p>
+                  {formatDistance(routeState.route.distance_meters)} ·{' '}
+                  {formatDuration(routeState.route.duration_seconds)}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border text-slate-700 sm:hidden"
+                aria-expanded={detailsExpanded}
+                aria-controls="route-instructions"
+                onClick={() => setDetailsExpanded((expanded) => !expanded)}
+              >
+                {detailsExpanded ? (
+                  <ChevronDown size={18} />
+                ) : (
+                  <ChevronUp size={18} />
+                )}
+                <span className="sr-only">
+                  {detailsExpanded
+                    ? 'Collapse route details'
+                    : 'Expand route details'}
+                </span>
+              </button>
             </div>
 
             <div className="space-y-2">
@@ -530,6 +560,7 @@ export function MapCanvas() {
                   }
 
                   setLocationEnabled(true)
+                  setDetailsExpanded(false)
                   setGuidanceEnabled(true)
                 }}
               >
@@ -540,34 +571,18 @@ export function MapCanvas() {
               {guidanceEnabled && !trackedLocation && (
                 <p className="text-xs text-slate-500">Waiting for GPS...</p>
               )}
-
-              {guidanceProgress && (
-                <GuidancePanel
-                  progress={guidanceProgress}
-                  isRerouting={routeState.isRerouting}
-                  rerouteError={routeState.rerouteError}
-                />
-              )}
             </div>
-
-            <ol
-              className="-mx-1 min-h-0 space-y-2 overflow-y-auto px-1"
-              aria-label="Route instructions"
-            >
-              {routeState.route.steps.map((step) => (
-                <li
-                  key={step.sequence}
-                  className="border-t pt-2 first:border-t-0 first:pt-0"
-                >
-                  <p>{step.instruction}</p>
-                  {step.distance_meters > 0 && (
-                    <p className="text-xs text-slate-500">
-                      {formatDistance(step.distance_meters)}
-                    </p>
-                  )}
-                </li>
-              ))}
-            </ol>
+            <RouteInstructionList
+              id="route-instructions"
+              route={routeState.route}
+              guidanceActive={guidanceActive}
+              progress={guidanceProgress}
+              isRerouting={routeState.isRerouting}
+              rerouteError={routeState.rerouteError}
+              formatDistance={formatDistance}
+              detailsExpanded={detailsExpanded}
+              className="min-h-0 flex-1 px-1 pb-1"
+            />
           </div>
         )}
       </section>
