@@ -12,6 +12,23 @@ services:
     volumes:
       - mininav_pgdata:/var/lib/postgresql
 
+  nominatim:
+    image: mediagis/nominatim:5.3
+    container_name: mininav-nominatim
+    shm_size: 1g
+    environment:
+      PBF_PATH: /osm/alberta-260619.osm.pbf
+      IMPORT_STYLE: full
+      FREEZE: "true"
+      IMPORT_WIKIPEDIA: "false"
+      NOMINATIM_PASSWORD: nominatim
+      THREADS: "4"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data/osm:/osm:ro
+      - mininav_nominatim_pgdata:/var/lib/postgresql/16/main
+
   backend:
     build: ./backend
     container_name: mininav-backend
@@ -25,6 +42,7 @@ services:
       DB_PASSWORD: mininav
       DB_HOST: db
       DB_PORT: "5432"
+      NOMINATIM_BASE_URL: http://nominatim:8080
     ports:
       - "8000:8000"
     volumes:
@@ -32,6 +50,7 @@ services:
       - ./data/osm:/data/osm:ro
     depends_on:
       - db
+      - nominatim
 
   frontend:
     build: ./frontend
@@ -82,3 +101,4 @@ services:
 volumes:
   mininav_pgdata:
   mininav_frontend_node_modules:
+  mininav_nominatim_pgdata:

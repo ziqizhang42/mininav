@@ -28,6 +28,8 @@ import { GuidanceDebugPanel } from '../guidance/GuidanceDebugPanel'
 import { trackedLocationFromGps } from '../guidance/locationSource'
 import { useMockLocation } from '../guidance/useMockLocation'
 
+import { SearchControl } from '../search/SearchControl'
+
 const ROUTE_SOURCE_ID = 'route'
 const ROUTE_CASING_LAYER_ID = 'route-casing'
 const ROUTE_LAYER_ID = 'route-line'
@@ -49,6 +51,10 @@ export function MapCanvas() {
     bearing: number
     pitch: number
   } | null>(null)
+  const selectSearchResultRef = useRef<
+    ((coordinate: Coordinate) => void) | null
+  >(null)
+
   const [detailsExpanded, setDetailsExpanded] = useState(false)
   const [locationEnabled, setLocationEnabled] = useState(false)
   const [guidanceEnabled, setGuidanceEnabled] = useState(false)
@@ -303,12 +309,7 @@ export function MapCanvas() {
       clearRoute()
     }
 
-    async function handleMapClick(event: maplibregl.MapMouseEvent) {
-      const coordinate: Coordinate = {
-        longitude: event.lngLat.lng,
-        latitude: event.lngLat.lat,
-      }
-
+    async function selectRouteCoordinate(coordinate: Coordinate) {
       const currentRouteState = routeStateRef.current
 
       if (currentRouteState.status === 'loading') {
@@ -323,6 +324,12 @@ export function MapCanvas() {
           .addTo(map)
 
         dispatchRoute({ type: 'originSelected', origin: coordinate })
+
+        map.easeTo({
+          center: [coordinate.longitude, coordinate.latitude],
+          zoom: Math.max(map.getZoom(), 15),
+          duration: 500,
+        })
 
         return
       }
@@ -341,6 +348,7 @@ export function MapCanvas() {
         destination: coordinate,
         requestId: requestNumber,
       })
+
       try {
         const route = await requestRoute(selectedOrigin, coordinate)
 
@@ -353,6 +361,7 @@ export function MapCanvas() {
           requestId: requestNumber,
           route,
         })
+
         originMarker?.setLngLat([route.origin.longitude, route.origin.latitude])
         destinationMarker?.setLngLat([
           route.destination.longitude,
@@ -377,6 +386,17 @@ export function MapCanvas() {
       }
     }
 
+    function handleMapClick(event: maplibregl.MapMouseEvent) {
+      void selectRouteCoordinate({
+        longitude: event.lngLat.lng,
+        latitude: event.lngLat.lat,
+      })
+    }
+
+    selectSearchResultRef.current = (coordinate: Coordinate) => {
+      void selectRouteCoordinate(coordinate)
+    }
+
     map.on('click', handleMapClick)
     window.addEventListener('keydown', handleKeyDown)
 
@@ -390,6 +410,7 @@ export function MapCanvas() {
       userLocationMarkerRef.current = null
       userLocationMarkerArrowRef.current = null
       selectCurrentLocationAsOriginRef.current = null
+      selectSearchResultRef.current = null
       replaceRouteOnMapRef.current = null
       preGuidanceCameraRef.current = null
       mapRef.current = null
@@ -497,6 +518,14 @@ export function MapCanvas() {
         aria-live="polite"
       >
         <div className="mb-3 shrink-0 space-y-3">
+          <SearchControl
+            onSelect={(result) => {
+              selectSearchResultRef.current?.({
+                longitude: result.longitude,
+                latitude: result.latitude,
+              })
+            }}
+          />
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"

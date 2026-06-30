@@ -81,6 +81,8 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 
+NOMINATIM_BASE_URL = os.environ.get("NOMINATIM_BASE_URL", "http://localhost:8080")
+
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases

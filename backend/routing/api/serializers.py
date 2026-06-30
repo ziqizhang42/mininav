@@ -59,3 +59,14 @@ class RouteResponseSerializer(serializers.Serializer):
     edge_count = serializers.IntegerField()
     geometry = GeometrySerializer()
     steps = RouteStepSerializer(many=True)
+
+
+class SearchQuerySerializer(serializers.Serializer):
+    q = serializers.CharField(min_length=2, max_length=200)
+
+
+class SearchResultSerializer(CoordinateSerializer):
+    id = serializers.CharField()
+    label = serializers.CharField()
+    category = serializers.CharField(allow_null=True)
+    type = serializers.CharField(allow_null=True)
