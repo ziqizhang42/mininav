@@ -1,4 +1,11 @@
-import { AlertTriangle, FastForward, Flag, MapPin, X } from 'lucide-react'
+import {
+  Activity,
+  AlertTriangle,
+  FastForward,
+  Flag,
+  MapPin,
+  X,
+} from 'lucide-react'
 
 import type { RouteResponse } from '../routing/api'
 import type { TrackedLocation } from './locationSource'
@@ -12,6 +19,8 @@ type Props = {
   onAdvance: (route: RouteResponse) => void
   onSetOffRoute: (route: RouteResponse) => void
   onSetNearDestination: (route: RouteResponse) => void
+  isJittering: boolean
+  onStartJitter: (route: RouteResponse | null) => void
 }
 
 export function GuidanceDebugPanel({
@@ -23,6 +32,8 @@ export function GuidanceDebugPanel({
   onAdvance,
   onSetOffRoute,
   onSetNearDestination,
+  isJittering,
+  onStartJitter,
 }: Props) {
   return (
     <div className="border-t pt-3">
@@ -53,6 +64,14 @@ export function GuidanceDebugPanel({
           onClick={() => route && onAdvance(route)}
         >
           <FastForward size={14} /> Advance
+        </button>
+
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs"
+          onClick={() => onStartJitter(route)}
+        >
+          <Activity size={14} /> {isJittering ? 'Jittering' : 'GPS jitter'}
         </button>
 
         <button

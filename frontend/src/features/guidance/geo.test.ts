@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest'
 
 import type { RouteResponse } from '../routing/api'
 import {
+  bearingDegrees,
   calculateGuidanceProgress,
   coordinateAlongRoute,
+  interpolateBearing,
   offsetCoordinateMeters,
+  routeBearingAt,
   routeLengthMeters,
 } from './geo'
 
@@ -210,6 +213,20 @@ describe('route geometry helpers', () => {
 
     expect(coordinate.longitude).toBeGreaterThan(origin.longitude)
     expect(coordinate.latitude).toBeCloseTo(origin.latitude + 100 / 111_320, 5)
+  })
+
+  it('calculates bearings between coordinates', () => {
+    expect(bearingDegrees(origin, turn)).toBeCloseTo(90)
+    expect(bearingDegrees(turn, destination)).toBeCloseTo(0)
+  })
+
+  it('calculates route bearings from route progress', () => {
+    expect(routeBearingAt(route, 100)).toBeCloseTo(90)
+    expect(routeBearingAt(route, routeLengthMeters(route) - 100)).toBeCloseTo(0)
+  })
+
+  it('interpolates bearings across north', () => {
+    expect(interpolateBearing(350, 10, 0.5)).toBeCloseTo(0)
   })
 
   it('creates an off-route simulation point that guidance detects', () => {

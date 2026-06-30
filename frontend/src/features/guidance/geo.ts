@@ -118,6 +118,63 @@ export function offsetCoordinateMeters(
   }
 }
 
+export function routeBearingAt(
+  route: RouteResponse,
+  alongMeters: number,
+  lookaheadMeters = 25,
+): number | null {
+  const routeMeters = routeLengthMeters(route)
+  const clampedAlongMeters = Math.min(routeMeters, Math.max(0, alongMeters))
+  const start = coordinateAlongRoute(route, clampedAlongMeters)
+  const ahead = coordinateAlongRoute(
+    route,
+    Math.min(routeMeters, clampedAlongMeters + lookaheadMeters),
+  )
+
+  if (distanceMeters(start, ahead) >= 1) {
+    return bearingDegrees(start, ahead)
+  }
+
+  const behind = coordinateAlongRoute(
+    route,
+    Math.max(0, clampedAlongMeters - lookaheadMeters),
+  )
+
+  if (distanceMeters(behind, start) < 1) {
+    return null
+  }
+
+  return bearingDegrees(behind, start)
+}
+
+export function bearingDegrees(start: Coordinate, end: Coordinate) {
+  const startLatitude = radians(start.latitude)
+  const endLatitude = radians(end.latitude)
+  const longitudeDifference = radians(end.longitude - start.longitude)
+
+  const y = Math.sin(longitudeDifference) * Math.cos(endLatitude)
+  const x =
+    Math.cos(startLatitude) * Math.sin(endLatitude) -
+    Math.sin(startLatitude) *
+      Math.cos(endLatitude) *
+      Math.cos(longitudeDifference)
+
+  return normalizeBearing(degrees(Math.atan2(y, x)))
+}
+
+export function interpolateBearing(from: number, to: number, fraction: number) {
+  const delta = ((((to - from) % 360) + 540) % 360) - 180
+  return normalizeBearing(from + delta * fraction)
+}
+
+export function normalizeBearing(value: number) {
+  return ((value % 360) + 360) % 360
+}
+
+function degrees(radians: number) {
+  return radians * (180 / Math.PI)
+}
+
 function findActiveStepIndex(route: RouteResponse, alongMeters: number) {
   let distance = 0
 
@@ -215,7 +272,7 @@ function projectOntoSegment(
   }
 }
 
-function distanceMeters(start: Coordinate, end: Coordinate) {
+export function distanceMeters(start: Coordinate, end: Coordinate) {
   const startLatitude = radians(start.latitude)
   const endLatitude = radians(end.latitude)
   const latitudeDifference = endLatitude - startLatitude

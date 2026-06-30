@@ -10,6 +10,7 @@ export type LocationState =
       coordinate: Coordinate
       accuracyMeters: number
       heading: number | null
+      speedMetersPerSecond: number | null
     }
   | { status: 'error'; message: string }
 
@@ -36,6 +37,7 @@ export function useGeolocation(enabled: boolean): LocationState {
           },
           accuracyMeters: position.coords.accuracy,
           heading: position.coords.heading,
+          speedMetersPerSecond: position.coords.speed,
         })
       },
       (error) => setResult({ status: 'error', message: error.message }),

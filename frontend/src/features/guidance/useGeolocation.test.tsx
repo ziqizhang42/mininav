@@ -80,6 +80,7 @@ describe('useGeolocation', () => {
       },
       accuracyMeters: 8,
       heading: 90,
+      speedMetersPerSecond: null,
     })
 
     unmount()

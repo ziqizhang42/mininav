@@ -22,6 +22,7 @@ import { calculateGuidanceProgress } from '../guidance/geo'
 import { useGeolocation } from '../guidance/useGeolocation'
 import { useWakeLock } from '../guidance/useWakeLock'
 import { useAutomaticRerouting } from '../guidance/useAutomaticRerouting'
+import { useNavigationBearing } from '../guidance/useNavigationBearing'
 
 import { GuidanceDebugPanel } from '../guidance/GuidanceDebugPanel'
 import { trackedLocationFromGps } from '../guidance/locationSource'
@@ -35,12 +36,19 @@ export function MapCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const userLocationMarkerRef = useRef<maplibregl.Marker | null>(null)
+  const userLocationMarkerArrowRef = useRef<SVGElement | null>(null)
   const selectCurrentLocationAsOriginRef = useRef<
     ((coordinate: Coordinate) => void) | null
   >(null)
   const replaceRouteOnMapRef = useRef<((route: RouteResponse) => void) | null>(
     null,
   )
+  const preGuidanceCameraRef = useRef<{
+    center: maplibregl.LngLat
+    zoom: number
+    bearing: number
+    pitch: number
+  } | null>(null)
   const [detailsExpanded, setDetailsExpanded] = useState(false)
   const [locationEnabled, setLocationEnabled] = useState(false)
   const [guidanceEnabled, setGuidanceEnabled] = useState(false)
@@ -83,6 +91,13 @@ export function MapCanvas() {
       trackedLocation.accuracyMeters,
     )
   }, [guidanceActive, routeState, trackedLocation])
+
+  const navigationBearingRef = useNavigationBearing({
+    enabled: guidanceActive,
+    route: activeRoute,
+    progress: guidanceProgress,
+    trackedLocation,
+  })
 
   const handleRerouteStarted = useCallback(
     (requestId: number) => {
@@ -373,8 +388,10 @@ export function MapCanvas() {
       destinationMarker?.remove()
       userLocationMarkerRef.current?.remove()
       userLocationMarkerRef.current = null
+      userLocationMarkerArrowRef.current = null
       selectCurrentLocationAsOriginRef.current = null
       replaceRouteOnMapRef.current = null
+      preGuidanceCameraRef.current = null
       mapRef.current = null
       map.remove()
     }
@@ -387,9 +404,37 @@ export function MapCanvas() {
       return
     }
 
+    if (guidanceActive) {
+      preGuidanceCameraRef.current ??= {
+        center: map.getCenter(),
+        zoom: map.getZoom(),
+        bearing: map.getBearing(),
+        pitch: map.getPitch(),
+      }
+      return
+    }
+
+    const camera = preGuidanceCameraRef.current
+    preGuidanceCameraRef.current = null
+
+    if (!camera) {
+      return
+    }
+
+    map.easeTo({ ...camera, duration: 500 })
+  }, [guidanceActive])
+
+  useEffect(() => {
+    const map = mapRef.current
+
+    if (!map) {
+      return
+    }
+
     if (!trackedLocation) {
       userLocationMarkerRef.current?.remove()
       userLocationMarkerRef.current = null
+      userLocationMarkerArrowRef.current = null
       return
     }
 
@@ -399,8 +444,12 @@ export function MapCanvas() {
     ]
 
     if (!userLocationMarkerRef.current) {
+      const markerElement = createUserLocationMarkerElement()
+      userLocationMarkerArrowRef.current = markerElement.arrow
+
       userLocationMarkerRef.current = new maplibregl.Marker({
-        color: '#2563eb',
+        element: markerElement.container,
+        anchor: 'center',
       })
         .setLngLat(lngLat)
         .addTo(map)
@@ -408,14 +457,32 @@ export function MapCanvas() {
       userLocationMarkerRef.current.setLngLat(lngLat)
     }
 
+    const markerBearing =
+      navigationBearingRef.current ??
+      (trackedLocation.heading !== null &&
+      Number.isFinite(trackedLocation.heading)
+        ? trackedLocation.heading
+        : null)
+
+    const targetMapBearing = guidanceActive
+      ? (navigationBearingRef.current ?? map.getBearing())
+      : map.getBearing()
+
+    updateUserLocationMarkerBearing(
+      userLocationMarkerArrowRef.current,
+      markerBearing,
+      targetMapBearing,
+    )
+
     if (guidanceActive) {
       map.easeTo({
         center: lngLat,
         zoom: Math.max(map.getZoom(), 15),
+        bearing: targetMapBearing,
         duration: 500,
       })
     }
-  }, [guidanceActive, trackedLocation])
+  }, [guidanceActive, guidanceProgress, navigationBearingRef, trackedLocation])
 
   return (
     <div className="relative min-h-0 w-full flex-1 overflow-hidden">
@@ -498,6 +565,8 @@ export function MapCanvas() {
                 onAdvance={mockLocation.advanceAlongRoute}
                 onSetOffRoute={mockLocation.setOffRoute}
                 onSetNearDestination={mockLocation.setNearDestination}
+                isJittering={mockLocation.isJittering}
+                onStartJitter={mockLocation.startGpsJitter}
               />
             </div>
           )}
@@ -588,6 +657,46 @@ export function MapCanvas() {
       </section>
     </div>
   )
+}
+
+function createUserLocationMarkerElement() {
+  const container = document.createElement('div')
+  container.style.width = '36px'
+  container.style.height = '36px'
+  container.style.display = 'flex'
+  container.style.alignItems = 'center'
+  container.style.justifyContent = 'center'
+  container.style.pointerEvents = 'none'
+
+  container.innerHTML = `
+    <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true">
+      <path d="M17 3 L27 29 L17 24 L7 29 Z" fill="#2563eb" stroke="#ffffff" stroke-width="3" stroke-linejoin="round" />
+      <circle cx="17" cy="18" r="3" fill="#ffffff" opacity="0.9" />
+    </svg>
+  `
+
+  const arrow = container.firstElementChild as SVGElement
+  arrow.style.transformOrigin = 'center'
+  arrow.style.transition = 'transform 180ms ease-out, opacity 180ms ease-out'
+
+  return { container, arrow }
+}
+
+function updateUserLocationMarkerBearing(
+  arrow: SVGElement | null,
+  bearing: number | null,
+  mapBearing: number,
+) {
+  if (!arrow) return
+
+  if (bearing === null) {
+    arrow.style.opacity = '0.75'
+    arrow.style.transform = 'rotate(0deg)'
+    return
+  }
+
+  arrow.style.opacity = '1'
+  arrow.style.transform = `rotate(${bearing - mapBearing}deg)`
 }
 
 function formatDistance(meters: number) {
