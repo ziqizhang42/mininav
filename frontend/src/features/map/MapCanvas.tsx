@@ -18,7 +18,11 @@ import {
 import { initialRouteState, routeReducer, type RouteEvent } from './routeState'
 
 import { RouteInstructionList } from '../guidance/RouteInstructionList'
-import { calculateGuidanceProgress } from '../guidance/geo'
+import {
+  calculateGuidanceProgress,
+  routeLengthMeters,
+  type GuidanceProgress,
+} from '../guidance/geo'
 import { useGeolocation } from '../guidance/useGeolocation'
 import { useWakeLock } from '../guidance/useWakeLock'
 import { useAutomaticRerouting } from '../guidance/useAutomaticRerouting'
@@ -28,11 +32,13 @@ import { GuidanceDebugPanel } from '../guidance/GuidanceDebugPanel'
 import { trackedLocationFromGps } from '../guidance/locationSource'
 import { useMockLocation } from '../guidance/useMockLocation'
 
-import { SearchControl } from '../search/SearchControl'
+import { SearchControl, type SearchField } from '../search/SearchControl'
 
 const ROUTE_SOURCE_ID = 'route'
 const ROUTE_CASING_LAYER_ID = 'route-casing'
 const ROUTE_LAYER_ID = 'route-line'
+const ROUTE_REMAINING_COLOR = '#1d4ed8'
+const ROUTE_TRAVELED_COLOR = '#94a3b8'
 
 export function MapCanvas() {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -51,13 +57,25 @@ export function MapCanvas() {
     bearing: number
     pitch: number
   } | null>(null)
-  const selectSearchResultRef = useRef<
-    ((coordinate: Coordinate) => void) | null
+  const selectOriginRef = useRef<
+    ((coordinate: Coordinate, label: string) => void) | null
   >(null)
+  const selectDestinationRef = useRef<
+    ((coordinate: Coordinate, label: string) => void) | null
+  >(null)
+  const activeSearchFieldRef = useRef<SearchField | null>(null)
+  const pendingDestinationRef = useRef<{
+    coordinate: Coordinate
+    label: string
+  } | null>(null)
 
   const [detailsExpanded, setDetailsExpanded] = useState(false)
   const [locationEnabled, setLocationEnabled] = useState(false)
   const [guidanceEnabled, setGuidanceEnabled] = useState(false)
+  const [originLabel, setOriginLabel] = useState<string | null>(null)
+  const [destinationLabel, setDestinationLabel] = useState<string | null>(null)
+  const [activeSearchField, setActiveSearchField] =
+    useState<SearchField | null>(null)
   const location = useGeolocation(locationEnabled)
   const mockLocation = useMockLocation()
   const gpsTrackedLocation = useMemo(
@@ -151,6 +169,15 @@ export function MapCanvas() {
   }, [routeState])
 
   useEffect(() => {
+    activeSearchFieldRef.current = activeSearchField
+
+    const map = mapRef.current
+    if (map) {
+      map.getCanvas().style.cursor = activeSearchField ? 'crosshair' : ''
+    }
+  }, [activeSearchField])
+
+  useEffect(() => {
     if (!containerRef.current) {
       return
     }
@@ -189,7 +216,9 @@ export function MapCanvas() {
         },
       })
 
-      map.getCanvas().style.cursor = 'crosshair'
+      map.getCanvas().style.cursor = activeSearchFieldRef.current
+        ? 'crosshair'
+        : ''
     })
 
     map.addControl(new maplibregl.NavigationControl())
@@ -212,24 +241,16 @@ export function MapCanvas() {
         map.removeSource(ROUTE_SOURCE_ID)
       }
 
+      pendingDestinationRef.current = null
+      setOriginLabel(null)
+      setDestinationLabel(null)
+      setActiveSearchField(null)
       setGuidanceEnabled(false)
       dispatchRoute({ type: 'resetRequested' })
     }
 
     selectCurrentLocationAsOriginRef.current = (coordinate: Coordinate) => {
-      clearRoute()
-
-      originMarker = new maplibregl.Marker({ color: '#16a34a' })
-        .setLngLat([coordinate.longitude, coordinate.latitude])
-        .addTo(map)
-
-      dispatchRoute({ type: 'originSelected', origin: coordinate })
-
-      map.easeTo({
-        center: [coordinate.longitude, coordinate.latitude],
-        zoom: Math.max(map.getZoom(), 15),
-        duration: 500,
-      })
+      selectOriginCoordinate(coordinate, 'Current location')
     }
 
     function drawRoute(
@@ -250,7 +271,11 @@ export function MapCanvas() {
       if (routeSource) {
         routeSource.setData(feature)
       } else {
-        map.addSource(ROUTE_SOURCE_ID, { type: 'geojson', data: feature })
+        map.addSource(ROUTE_SOURCE_ID, {
+          type: 'geojson',
+          data: feature,
+          lineMetrics: true,
+        })
 
         map.addLayer({
           id: ROUTE_CASING_LAYER_ID,
@@ -270,7 +295,7 @@ export function MapCanvas() {
           source: ROUTE_SOURCE_ID,
           layout: { 'line-cap': 'round', 'line-join': 'round' },
           paint: {
-            'line-color': '#1d4ed8',
+            'line-color': ROUTE_REMAINING_COLOR,
             'line-width': 5,
             'line-opacity': 1,
           },
@@ -309,22 +334,77 @@ export function MapCanvas() {
       clearRoute()
     }
 
-    async function selectRouteCoordinate(coordinate: Coordinate) {
+    function setOriginMarker(coordinate: Coordinate) {
+      if (originMarker) {
+        originMarker.setLngLat([coordinate.longitude, coordinate.latitude])
+        return
+      }
+
+      originMarker = new maplibregl.Marker({ color: '#16a34a' })
+        .setLngLat([coordinate.longitude, coordinate.latitude])
+        .addTo(map)
+    }
+
+    function setDestinationMarker(coordinate: Coordinate) {
+      if (destinationMarker) {
+        destinationMarker.setLngLat([coordinate.longitude, coordinate.latitude])
+        return
+      }
+
+      destinationMarker = new maplibregl.Marker({ color: '#dc2626' })
+        .setLngLat([coordinate.longitude, coordinate.latitude])
+        .addTo(map)
+    }
+
+    function selectOriginCoordinate(coordinate: Coordinate, label: string) {
+      if (routeStateRef.current.status === 'loading') {
+        return
+      }
+      setActiveSearchField(null)
+      const selectedDestination = pendingDestinationRef.current
+
+      clearRoute()
+      pendingDestinationRef.current = selectedDestination
+
+      setOriginLabel(label)
+      setOriginMarker(coordinate)
+
+      dispatchRoute({ type: 'originSelected', origin: coordinate })
+
+      map.easeTo({
+        center: [coordinate.longitude, coordinate.latitude],
+        zoom: Math.max(map.getZoom(), 15),
+        duration: 500,
+      })
+
+      if (selectedDestination) {
+        setDestinationLabel(selectedDestination.label)
+        void selectDestinationCoordinate(
+          selectedDestination.coordinate,
+          selectedDestination.label,
+        )
+      }
+    }
+
+    async function selectDestinationCoordinate(
+      coordinate: Coordinate,
+      label: string,
+    ) {
       const currentRouteState = routeStateRef.current
 
       if (currentRouteState.status === 'loading') {
         return
       }
+      setActiveSearchField(null)
 
-      if (currentRouteState.status !== 'selecting-destination') {
-        clearRoute()
+      setDestinationLabel(label)
+      pendingDestinationRef.current = { coordinate, label }
+      setDestinationMarker(coordinate)
 
-        originMarker = new maplibregl.Marker({ color: '#16a34a' })
-          .setLngLat([coordinate.longitude, coordinate.latitude])
-          .addTo(map)
-
-        dispatchRoute({ type: 'originSelected', origin: coordinate })
-
+      if (
+        currentRouteState.status !== 'selecting-destination' &&
+        currentRouteState.status !== 'success'
+      ) {
         map.easeTo({
           center: [coordinate.longitude, coordinate.latitude],
           zoom: Math.max(map.getZoom(), 15),
@@ -335,11 +415,6 @@ export function MapCanvas() {
       }
 
       const selectedOrigin = currentRouteState.origin
-
-      destinationMarker = new maplibregl.Marker({ color: '#dc2626' })
-        .setLngLat([coordinate.longitude, coordinate.latitude])
-        .addTo(map)
-
       const requestNumber = ++activeRequest
 
       dispatchRoute({
@@ -387,15 +462,27 @@ export function MapCanvas() {
     }
 
     function handleMapClick(event: maplibregl.MapMouseEvent) {
-      void selectRouteCoordinate({
+      const selectedField = activeSearchFieldRef.current
+
+      if (!selectedField) {
+        return
+      }
+
+      const coordinate: Coordinate = {
         longitude: event.lngLat.lng,
         latitude: event.lngLat.lat,
-      })
+      }
+
+      if (selectedField === 'origin') {
+        selectOriginCoordinate(coordinate, 'Map origin')
+        return
+      }
+
+      void selectDestinationCoordinate(coordinate, 'Map destination')
     }
 
-    selectSearchResultRef.current = (coordinate: Coordinate) => {
-      void selectRouteCoordinate(coordinate)
-    }
+    selectOriginRef.current = selectOriginCoordinate
+    selectDestinationRef.current = selectDestinationCoordinate
 
     map.on('click', handleMapClick)
     window.addEventListener('keydown', handleKeyDown)
@@ -410,13 +497,34 @@ export function MapCanvas() {
       userLocationMarkerRef.current = null
       userLocationMarkerArrowRef.current = null
       selectCurrentLocationAsOriginRef.current = null
-      selectSearchResultRef.current = null
+      selectOriginRef.current = null
+      selectDestinationRef.current = null
+      pendingDestinationRef.current = null
       replaceRouteOnMapRef.current = null
       preGuidanceCameraRef.current = null
       mapRef.current = null
       map.remove()
     }
   }, [dispatchRoute])
+
+  useEffect(() => {
+    const map = mapRef.current
+
+    if (!map || !map.getLayer(ROUTE_LAYER_ID)) {
+      return
+    }
+
+    const progressFraction =
+      guidanceActive && activeRoute && guidanceProgress
+        ? traveledRouteFraction(activeRoute, guidanceProgress.remainingMeters)
+        : 0
+
+    map.setPaintProperty(
+      ROUTE_LAYER_ID,
+      'line-gradient',
+      routeLineGradient(progressFraction),
+    )
+  }, [activeRoute, guidanceActive, guidanceProgress])
 
   useEffect(() => {
     const map = mapRef.current
@@ -519,11 +627,44 @@ export function MapCanvas() {
       >
         <div className="mb-3 shrink-0 space-y-3">
           <SearchControl
-            onSelect={(result) => {
-              selectSearchResultRef.current?.({
-                longitude: result.longitude,
-                latitude: result.latitude,
-              })
+            activeField={activeSearchField}
+            onActiveFieldChange={setActiveSearchField}
+            originLabel={originLabel}
+            destinationLabel={destinationLabel}
+            currentLocationAvailable={Boolean(trackedLocation)}
+            currentLocationLabel={
+              trackedLocation?.source === 'mock'
+                ? 'Use mock location'
+                : trackedLocation?.source === 'gps'
+                  ? 'Use current GPS location'
+                  : 'Use current location'
+            }
+            onUseCurrentLocation={() => {
+              setLocationEnabled(true)
+
+              if (!trackedLocation) return
+
+              selectCurrentLocationAsOriginRef.current?.(
+                trackedLocation.coordinate,
+              )
+            }}
+            onSelectOrigin={(result) => {
+              selectOriginRef.current?.(
+                {
+                  longitude: result.longitude,
+                  latitude: result.latitude,
+                },
+                result.label,
+              )
+            }}
+            onSelectDestination={(result) => {
+              selectDestinationRef.current?.(
+                {
+                  longitude: result.longitude,
+                  latitude: result.latitude,
+                },
+                result.label,
+              )
             }}
           />
           <div className="flex flex-wrap items-center gap-2">
@@ -534,24 +675,6 @@ export function MapCanvas() {
             >
               <LocateFixed size={16} />
               Locate
-            </button>
-
-            <button
-              type="button"
-              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 font-medium disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!trackedLocation}
-              onClick={() => {
-                if (!trackedLocation) {
-                  setLocationEnabled(true)
-                  return
-                }
-
-                selectCurrentLocationAsOriginRef.current?.(
-                  trackedLocation.coordinate,
-                )
-              }}
-            >
-              Use as start
             </button>
 
             {!mockLocation.location && location.status === 'locating' && (
@@ -600,13 +723,21 @@ export function MapCanvas() {
             </div>
           )}
         </div>
-        {routeState.status === 'idle' && (
-          <p>Click a start point, or use your current location.</p>
-        )}
-
-        {routeState.status === 'selecting-destination' && (
-          <p>Click a destination.</p>
-        )}
+        {routeState.status !== 'loading' &&
+          routeState.status !== 'error' &&
+          routeState.status !== 'success' && (
+            <p>
+              {activeSearchField === 'origin'
+                ? 'Click the map to set the origin, search above, or use current location.'
+                : activeSearchField === 'destination'
+                  ? 'Click the map to set the destination, or search above.'
+                  : originLabel && !destinationLabel
+                    ? 'Select Destination to finish the route.'
+                    : destinationLabel && !originLabel
+                      ? 'Select Origin to finish the route.'
+                      : 'Select Origin or Destination to start.'}
+            </p>
+          )}
 
         {routeState.status === 'loading' && <p>Calculating route...</p>}
 
@@ -622,8 +753,11 @@ export function MapCanvas() {
                   {routeState.isRerouting ? 'Rerouting...' : 'Route ready'}
                 </p>
                 <p>
-                  {formatDistance(routeState.route.distance_meters)} ·{' '}
-                  {formatDuration(routeState.route.duration_seconds)}
+                  {formatRouteSummary(
+                    routeState.route,
+                    guidanceProgress,
+                    guidanceActive,
+                  )}
                 </p>
               </div>
 
@@ -726,6 +860,59 @@ function updateUserLocationMarkerBearing(
 
   arrow.style.opacity = '1'
   arrow.style.transform = `rotate(${bearing - mapBearing}deg)`
+}
+
+function traveledRouteFraction(route: RouteResponse, remainingMeters: number) {
+  const routeMeters = routeLengthMeters(route)
+
+  if (routeMeters <= 0) return 0
+
+  return Math.min(1, Math.max(0, (routeMeters - remainingMeters) / routeMeters))
+}
+
+function routeLineGradient(progressFraction: number) {
+  const split = Math.min(1, Math.max(0, progressFraction))
+
+  return [
+    'step',
+    ['line-progress'],
+    ROUTE_TRAVELED_COLOR,
+    split,
+    ROUTE_REMAINING_COLOR,
+  ]
+}
+
+function formatRouteSummary(
+  route: RouteResponse,
+  progress: GuidanceProgress | null,
+  guidanceActive: boolean,
+) {
+  const showingRemaining = guidanceActive && progress !== null
+  const distanceMeters = showingRemaining
+    ? progress.remainingMeters
+    : route.distance_meters
+  const durationSeconds = showingRemaining
+    ? estimateRemainingDurationSeconds(route, progress.remainingMeters)
+    : route.duration_seconds
+  const suffix = showingRemaining ? ' left' : ''
+
+  return `${formatDistance(distanceMeters)}${suffix} · ${formatDuration(
+    durationSeconds,
+  )}${suffix}`
+}
+
+function estimateRemainingDurationSeconds(
+  route: RouteResponse,
+  remainingMeters: number,
+) {
+  if (route.distance_meters <= 0) return 0
+
+  const remainingFraction = Math.min(
+    1,
+    Math.max(0, remainingMeters / route.distance_meters),
+  )
+
+  return route.duration_seconds * remainingFraction
 }
 
 function formatDistance(meters: number) {
