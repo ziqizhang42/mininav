@@ -37,6 +37,11 @@ ALLOWED_HOSTS = [
     if host.strip()
 ]
 
+# Caddy is the only public entry point in production.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+
 
 # Application definition
 
