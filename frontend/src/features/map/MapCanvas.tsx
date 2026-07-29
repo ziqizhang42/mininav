@@ -7,7 +7,7 @@ import {
   useState,
 } from 'react'
 import maplibregl from 'maplibre-gl'
-import { ChevronDown, ChevronUp, LocateFixed, Navigation } from 'lucide-react'
+import { LocateFixed } from 'lucide-react'
 
 import {
   requestRoute,
@@ -18,29 +18,34 @@ import {
 import { initialRouteState, routeReducer, type RouteEvent } from './routeState'
 
 import { RouteInstructionList } from '../guidance/RouteInstructionList'
-import {
-  calculateGuidanceProgress,
-  routeLengthMeters,
-  type GuidanceProgress,
-} from '../guidance/geo'
-import { useGeolocation } from '../guidance/useGeolocation'
+import { NextManeuverCard } from '../guidance/NextManeuverCard'
+import { TripStatusBar } from '../guidance/TripStatusBar'
+import { PlanningPanel, type LocationStatus } from './PlanningPanel'
+import { calculateGuidanceProgress, routeLengthMeters } from '../guidance/geo'
+import { useGeolocation, type LocationState } from '../guidance/useGeolocation'
 import { useWakeLock } from '../guidance/useWakeLock'
 import { useAutomaticRerouting } from '../guidance/useAutomaticRerouting'
 import { useNavigationBearing } from '../guidance/useNavigationBearing'
 
 import { GuidanceDebugPanel } from '../guidance/GuidanceDebugPanel'
-import { trackedLocationFromGps } from '../guidance/locationSource'
+import {
+  trackedLocationFromGps,
+  type TrackedLocation,
+} from '../guidance/locationSource'
 import { useMockLocation } from '../guidance/useMockLocation'
 
-import { SearchControl, type SearchField } from '../search/SearchControl'
+import type { SearchField } from '../search/SearchControl'
 
 const ROUTE_SOURCE_ID = 'route'
 const ROUTE_CASING_LAYER_ID = 'route-casing'
 const ROUTE_LAYER_ID = 'route-line'
 const ROUTE_REMAINING_COLOR = '#1d4ed8'
 const ROUTE_TRAVELED_COLOR = '#94a3b8'
+const GUIDANCE_PITCH = 45
+const GUIDANCE_MIN_ZOOM = 16
 
 export function MapCanvas() {
+  const rootRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const userLocationMarkerRef = useRef<maplibregl.Marker | null>(null)
@@ -63,13 +68,18 @@ export function MapCanvas() {
   const selectDestinationRef = useRef<
     ((coordinate: Coordinate, label: string) => void) | null
   >(null)
+  const clearRouteRef = useRef<(() => void) | null>(null)
+  const pendingRecenterRef = useRef(false)
   const activeSearchFieldRef = useRef<SearchField | null>(null)
   const pendingDestinationRef = useRef<{
     coordinate: Coordinate
     label: string
   } | null>(null)
 
-  const [detailsExpanded, setDetailsExpanded] = useState(false)
+  const [bottomOverlay, setBottomOverlay] = useState<HTMLDivElement | null>(
+    null,
+  )
+  const [stepsOpen, setStepsOpen] = useState(false)
   const [locationEnabled, setLocationEnabled] = useState(false)
   const [guidanceEnabled, setGuidanceEnabled] = useState(false)
   const [originLabel, setOriginLabel] = useState<string | null>(null)
@@ -221,7 +231,7 @@ export function MapCanvas() {
         : ''
     })
 
-    map.addControl(new maplibregl.NavigationControl())
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }))
 
     function clearRoute() {
       activeRequest += 1
@@ -246,8 +256,11 @@ export function MapCanvas() {
       setDestinationLabel(null)
       setActiveSearchField(null)
       setGuidanceEnabled(false)
+      setStepsOpen(false)
       dispatchRoute({ type: 'resetRequested' })
     }
+
+    clearRouteRef.current = clearRoute
 
     selectCurrentLocationAsOriginRef.current = (coordinate: Coordinate) => {
       selectOriginCoordinate(coordinate, 'Current location')
@@ -499,6 +512,7 @@ export function MapCanvas() {
       selectCurrentLocationAsOriginRef.current = null
       selectOriginRef.current = null
       selectDestinationRef.current = null
+      clearRouteRef.current = null
       pendingDestinationRef.current = null
       replaceRouteOnMapRef.current = null
       preGuidanceCameraRef.current = null
@@ -603,42 +617,207 @@ export function MapCanvas() {
       targetMapBearing,
     )
 
+    // A recenter asked for before the first fix arrived is honoured here.
+    const recenterRequested = pendingRecenterRef.current
+    pendingRecenterRef.current = false
+
     if (guidanceActive) {
       map.easeTo({
         center: lngLat,
-        zoom: Math.max(map.getZoom(), 15),
+        zoom: Math.max(map.getZoom(), GUIDANCE_MIN_ZOOM),
         bearing: targetMapBearing,
+        pitch: GUIDANCE_PITCH,
+        offset: [0, guidanceCameraOffsetY(map)],
+        duration: 500,
+      })
+    } else if (recenterRequested) {
+      map.easeTo({
+        center: lngLat,
+        zoom: Math.max(map.getZoom(), 15),
         duration: 500,
       })
     }
   }, [guidanceActive, guidanceProgress, navigationBearingRef, trackedLocation])
 
+  // Keep the MapLibre attribution and the location button clear of the bottom
+  // overlay, whichever one is showing. Written straight to the DOM so a resize
+  // does not re-render the map.
+  useEffect(() => {
+    const root = rootRef.current
+
+    if (!root) return
+
+    function measure() {
+      if (!root || !bottomOverlay) return
+
+      root.style.setProperty(
+        '--mininav-bottom-inset',
+        `${bottomOverlay.getBoundingClientRect().height}px`,
+      )
+    }
+
+    if (!bottomOverlay) {
+      root.style.setProperty('--mininav-bottom-inset', '0px')
+      return
+    }
+
+    measure()
+
+    if (typeof ResizeObserver === 'undefined') return
+
+    const observer = new ResizeObserver(measure)
+
+    observer.observe(bottomOverlay)
+
+    return () => observer.disconnect()
+  }, [bottomOverlay])
+
+  const showMyLocation = useCallback(() => {
+    setLocationEnabled(true)
+
+    const map = mapRef.current
+
+    if (!map || !trackedLocation) {
+      // Nothing to centre on yet: remember the request so the first fix moves
+      // the map instead of needing a second press.
+      pendingRecenterRef.current = true
+      return
+    }
+
+    map.easeTo({
+      center: [
+        trackedLocation.coordinate.longitude,
+        trackedLocation.coordinate.latitude,
+      ],
+      zoom: Math.max(map.getZoom(), 15),
+      offset: guidanceActive ? [0, guidanceCameraOffsetY(map)] : [0, 0],
+      duration: 500,
+    })
+  }, [guidanceActive, trackedLocation])
+
+  const successState = routeState.status === 'success' ? routeState : null
+  const navigating = guidanceEnabled && successState !== null
+  const locationStatus = describeLocationStatus(location, trackedLocation)
+  const devPanel = import.meta.env.DEV ? (
+    <GuidanceDebugPanel
+      route={activeRoute}
+      mockLocation={mockLocation.location}
+      onSetCalgary={mockLocation.setCalgaryLocation}
+      onClear={mockLocation.clear}
+      onSetRouteStart={mockLocation.setRouteStart}
+      onAdvance={mockLocation.advanceAlongRoute}
+      onSetOffRoute={mockLocation.setOffRoute}
+      onSetNearDestination={mockLocation.setNearDestination}
+      isJittering={mockLocation.isJittering}
+      onStartJitter={mockLocation.startGpsJitter}
+    />
+  ) : null
+
   return (
-    <div className="relative min-h-0 w-full flex-1 overflow-hidden">
+    <div ref={rootRef} className="relative h-full w-full overflow-hidden">
+      {/*
+        MapLibre's stylesheet forces `position: relative` on the map container,
+        so it has to be sized with height rather than inset utilities.
+      */}
       <div
         ref={containerRef}
         className="h-full w-full"
         aria-label="Map of Alberta"
       />
 
-      <section
-        className={`absolute right-3 bottom-3 left-3 z-10 flex flex-col overflow-hidden rounded-lg border bg-white/95 px-3 py-3 text-sm shadow-lg backdrop-blur sm:top-4 sm:right-auto sm:bottom-auto sm:left-4 sm:max-h-[calc(100%-2rem)] sm:w-96 sm:max-w-sm sm:px-4 ${detailsExpanded ? 'max-h-[72dvh]' : 'max-h-[32dvh]'}`}
-        aria-live="polite"
-      >
-        <div className="mb-3 shrink-0 space-y-3">
-          <SearchControl
-            activeField={activeSearchField}
-            onActiveFieldChange={setActiveSearchField}
+      <div className="pointer-events-none absolute right-3 bottom-[calc(var(--mininav-bottom-inset,0px)+0.75rem)] z-20 sm:right-4 sm:bottom-10">
+        <button
+          type="button"
+          className="pointer-events-auto grid size-11 place-items-center rounded-full bg-white text-slate-700 shadow-lg ring-1 ring-slate-900/5 hover:bg-slate-50"
+          onClick={showMyLocation}
+        >
+          <LocateFixed size={20} aria-hidden />
+          <span className="sr-only">
+            {navigating ? 'Recenter on my location' : 'Show my location'}
+          </span>
+        </button>
+      </div>
+
+      {navigating && successState ? (
+        <>
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-20 pt-[env(safe-area-inset-top)] sm:top-4 sm:right-auto sm:left-4 sm:w-[400px] sm:pt-0">
+            <NextManeuverCard
+              route={successState.route}
+              progress={guidanceProgress}
+              isRerouting={successState.isRerouting}
+              rerouteError={successState.rerouteError}
+              locationError={
+                locationStatus?.tone === 'error' ? locationStatus.text : null
+              }
+              destinationLabel={destinationLabel}
+            />
+
+            {devPanel && (
+              <div className="pointer-events-auto mx-2 mt-2 rounded-2xl bg-white/95 px-3 pb-2 shadow-lg ring-1 ring-slate-900/5 backdrop-blur sm:mx-0">
+                {devPanel}
+              </div>
+            )}
+          </div>
+
+          <div
+            ref={setBottomOverlay}
+            className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex flex-col gap-2 sm:right-auto sm:bottom-4 sm:left-4 sm:w-[400px]"
+          >
+            {stepsOpen && (
+              <div className="pointer-events-auto mx-2 overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-slate-900/5 sm:mx-0">
+                <RouteInstructionList
+                  id="guidance-steps"
+                  route={successState.route}
+                  guidanceActive
+                  progress={guidanceProgress}
+                  className="max-h-[38dvh]"
+                />
+              </div>
+            )}
+
+            <TripStatusBar
+              remainingMeters={
+                guidanceProgress?.remainingMeters ??
+                successState.route.distance_meters
+              }
+              remainingSeconds={
+                guidanceProgress
+                  ? estimateRemainingDurationSeconds(
+                      successState.route,
+                      guidanceProgress.remainingMeters,
+                    )
+                  : successState.route.duration_seconds
+              }
+              hasArrived={guidanceProgress?.hasArrived ?? false}
+              stepsOpen={stepsOpen}
+              stepsControlsId="guidance-steps"
+              onToggleSteps={() => setStepsOpen((open) => !open)}
+              onEndGuidance={() => {
+                setGuidanceEnabled(false)
+                setStepsOpen(false)
+              }}
+            />
+          </div>
+        </>
+      ) : (
+        <div
+          ref={setBottomOverlay}
+          className="absolute inset-x-0 bottom-0 z-20 sm:inset-auto sm:top-4 sm:left-4 sm:w-[400px]"
+        >
+          <PlanningPanel
+            routeState={routeState}
             originLabel={originLabel}
             destinationLabel={destinationLabel}
+            activeSearchField={activeSearchField}
+            onActiveSearchFieldChange={setActiveSearchField}
             currentLocationAvailable={Boolean(trackedLocation)}
             currentLocationLabel={
               trackedLocation?.source === 'mock'
                 ? 'Use mock location'
-                : trackedLocation?.source === 'gps'
-                  ? 'Use current GPS location'
-                  : 'Use current location'
+                : 'Use my current location'
             }
+            locationStatus={locationStatus}
+            waitingForLocation={!trackedLocation}
             onUseCurrentLocation={() => {
               setLocationEnabled(true)
 
@@ -650,174 +829,26 @@ export function MapCanvas() {
             }}
             onSelectOrigin={(result) => {
               selectOriginRef.current?.(
-                {
-                  longitude: result.longitude,
-                  latitude: result.latitude,
-                },
+                { longitude: result.longitude, latitude: result.latitude },
                 result.label,
               )
             }}
             onSelectDestination={(result) => {
               selectDestinationRef.current?.(
-                {
-                  longitude: result.longitude,
-                  latitude: result.latitude,
-                },
+                { longitude: result.longitude, latitude: result.latitude },
                 result.label,
               )
             }}
+            onStartGuidance={() => {
+              setLocationEnabled(true)
+              setStepsOpen(false)
+              setGuidanceEnabled(true)
+            }}
+            onClearRoute={() => clearRouteRef.current?.()}
+            devPanel={devPanel}
           />
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 font-medium"
-              onClick={() => setLocationEnabled(true)}
-            >
-              <LocateFixed size={16} />
-              Locate
-            </button>
-
-            {!mockLocation.location && location.status === 'locating' && (
-              <p className="text-xs text-slate-500">Locating...</p>
-            )}
-
-            {trackedLocation?.source === 'mock' && (
-              <p className="text-xs text-slate-500">Mock GPS ready</p>
-            )}
-
-            {trackedLocation?.source === 'gps' && (
-              <p className="text-xs text-slate-500">
-                GPS ready · ±{Math.round(trackedLocation.accuracyMeters)} m
-              </p>
-            )}
-
-            {!mockLocation.location && location.status === 'unsupported' && (
-              <p className="text-xs text-red-700">Location is not supported.</p>
-            )}
-
-            {!mockLocation.location && location.status === 'error' && (
-              <p className="text-xs text-red-700">{location.message}</p>
-            )}
-          </div>
-
-          {import.meta.env.DEV && (
-            <div
-              className={
-                routeState.status === 'success' && !detailsExpanded
-                  ? 'hidden sm:block'
-                  : undefined
-              }
-            >
-              <GuidanceDebugPanel
-                route={activeRoute}
-                mockLocation={mockLocation.location}
-                onSetCalgary={mockLocation.setCalgaryLocation}
-                onClear={mockLocation.clear}
-                onSetRouteStart={mockLocation.setRouteStart}
-                onAdvance={mockLocation.advanceAlongRoute}
-                onSetOffRoute={mockLocation.setOffRoute}
-                onSetNearDestination={mockLocation.setNearDestination}
-                isJittering={mockLocation.isJittering}
-                onStartJitter={mockLocation.startGpsJitter}
-              />
-            </div>
-          )}
         </div>
-        {routeState.status !== 'loading' &&
-          routeState.status !== 'error' &&
-          routeState.status !== 'success' && (
-            <p>
-              {activeSearchField === 'origin'
-                ? 'Click the map to set the origin, search above, or use current location.'
-                : activeSearchField === 'destination'
-                  ? 'Click the map to set the destination, or search above.'
-                  : originLabel && !destinationLabel
-                    ? 'Select Destination to finish the route.'
-                    : destinationLabel && !originLabel
-                      ? 'Select Origin to finish the route.'
-                      : 'Select Origin or Destination to start.'}
-            </p>
-          )}
-
-        {routeState.status === 'loading' && <p>Calculating route...</p>}
-
-        {routeState.status === 'error' && (
-          <p className="text-red-700">{routeState.message}</p>
-        )}
-
-        {routeState.status === 'success' && (
-          <div className="flex min-h-0 flex-col gap-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="space-y-1">
-                <p className="font-medium">
-                  {routeState.isRerouting ? 'Rerouting...' : 'Route ready'}
-                </p>
-                <p>
-                  {formatRouteSummary(
-                    routeState.route,
-                    guidanceProgress,
-                    guidanceActive,
-                  )}
-                </p>
-              </div>
-
-              <button
-                type="button"
-                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border text-slate-700 sm:hidden"
-                aria-expanded={detailsExpanded}
-                aria-controls="route-instructions"
-                onClick={() => setDetailsExpanded((expanded) => !expanded)}
-              >
-                {detailsExpanded ? (
-                  <ChevronDown size={18} />
-                ) : (
-                  <ChevronUp size={18} />
-                )}
-                <span className="sr-only">
-                  {detailsExpanded
-                    ? 'Collapse route details'
-                    : 'Expand route details'}
-                </span>
-              </button>
-            </div>
-
-            <div className="space-y-2">
-              <button
-                type="button"
-                className="inline-flex items-center gap-2 rounded-md bg-blue-700 px-3 py-2 font-medium text-white disabled:bg-slate-300"
-                onClick={() => {
-                  if (guidanceEnabled) {
-                    setGuidanceEnabled(false)
-                    return
-                  }
-
-                  setLocationEnabled(true)
-                  setDetailsExpanded(false)
-                  setGuidanceEnabled(true)
-                }}
-              >
-                <Navigation size={16} />
-                {guidanceEnabled ? 'Stop guidance' : 'Start guidance'}
-              </button>
-
-              {guidanceEnabled && !trackedLocation && (
-                <p className="text-xs text-slate-500">Waiting for GPS...</p>
-              )}
-            </div>
-            <RouteInstructionList
-              id="route-instructions"
-              route={routeState.route}
-              guidanceActive={guidanceActive}
-              progress={guidanceProgress}
-              isRerouting={routeState.isRerouting}
-              rerouteError={routeState.rerouteError}
-              formatDistance={formatDistance}
-              detailsExpanded={detailsExpanded}
-              className="min-h-0 flex-1 px-1 pb-1"
-            />
-          </div>
-        )}
-      </section>
+      )}
     </div>
   )
 }
@@ -882,25 +913,6 @@ function routeLineGradient(progressFraction: number) {
   ]
 }
 
-function formatRouteSummary(
-  route: RouteResponse,
-  progress: GuidanceProgress | null,
-  guidanceActive: boolean,
-) {
-  const showingRemaining = guidanceActive && progress !== null
-  const distanceMeters = showingRemaining
-    ? progress.remainingMeters
-    : route.distance_meters
-  const durationSeconds = showingRemaining
-    ? estimateRemainingDurationSeconds(route, progress.remainingMeters)
-    : route.duration_seconds
-  const suffix = showingRemaining ? ' left' : ''
-
-  return `${formatDistance(distanceMeters)}${suffix} · ${formatDuration(
-    durationSeconds,
-  )}${suffix}`
-}
-
 function estimateRemainingDurationSeconds(
   route: RouteResponse,
   remainingMeters: number,
@@ -915,31 +927,40 @@ function estimateRemainingDurationSeconds(
   return route.duration_seconds * remainingFraction
 }
 
-function formatDistance(meters: number) {
-  if (meters >= 1000) {
-    return `${(meters / 1000).toFixed(1)} km`
-  }
-
-  return `${Math.round(meters)} m`
+/**
+ * Keeps the puck below the middle of the screen while navigating so the road
+ * ahead, not the road behind, fills the map.
+ */
+function guidanceCameraOffsetY(map: maplibregl.Map) {
+  return Math.min(140, map.getContainer().clientHeight * 0.18)
 }
 
-function formatDuration(seconds: number) {
-  const minutes = Math.round(seconds / 60)
-
-  if (minutes < 1) {
-    return '< 1 min'
+function describeLocationStatus(
+  location: LocationState,
+  trackedLocation: TrackedLocation | null,
+): LocationStatus | null {
+  if (trackedLocation?.source === 'mock') {
+    return { text: 'Mock location active', tone: 'muted' }
   }
 
-  if (minutes < 60) {
-    return `${minutes} min`
+  if (trackedLocation?.source === 'gps') {
+    return {
+      text: `GPS ready · ±${Math.round(trackedLocation.accuracyMeters)} m`,
+      tone: 'muted',
+    }
   }
 
-  const hours = Math.floor(minutes / 60)
-  const remainingMinutes = minutes % 60
-
-  if (remainingMinutes === 0) {
-    return `${hours} hr`
+  switch (location.status) {
+    case 'locating':
+      return { text: 'Locating...', tone: 'muted' }
+    case 'unsupported':
+      return {
+        text: 'Location is not supported on this device.',
+        tone: 'error',
+      }
+    case 'error':
+      return { text: location.message, tone: 'error' }
+    default:
+      return null
   }
-
-  return `${hours} hr ${remainingMinutes} min`
 }
