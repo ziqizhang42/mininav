@@ -28,7 +28,9 @@ def shortest_path(
     distances = {start_state: 0.0}
     previous: dict[tuple[int, int | None], tuple[tuple[int, int | None], int]] = {}
     # The incoming edge travels with its own queue entry, so the search never
-    # needs a lookup table over every edge in the graph.
+    # needs a lookup table over every edge in the graph. Entries are only ever
+    # pushed on a strict improvement, so (cost, node, edge id) stays unique and
+    # heapq never has to order the trailing edge itself.
     queue = [(0.0, start, None, None)]
 
     while queue:
@@ -61,14 +63,17 @@ def shortest_path(
             ):
                 continue
 
-            next_state = (edge.target, edge.id)
+            # Only a node named by a turn rule can consult the direction it was
+            # reached from, so states collapse to the node alone everywhere else.
+            next_edge_id = edge.id if edge.target in turn_rules.via_nodes else None
+            next_state = (edge.target, next_edge_id)
             new_cost = current_cost + edge.cost
             known_cost = distances.get(next_state, float("inf"))
 
             if new_cost < known_cost:
                 distances[next_state] = new_cost
                 previous[next_state] = (current_state, edge.id)
-                heapq.heappush(queue, (new_cost, edge.target, edge.id, edge))
+                heapq.heappush(queue, (new_cost, edge.target, next_edge_id, edge))
 
     return None
 

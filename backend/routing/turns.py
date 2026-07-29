@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from routing.graph import Edge
 
@@ -7,6 +7,16 @@ from routing.graph import Edge
 class TurnRules:
     blocked: dict[tuple[int, int, int], frozenset[str]]
     only_allowed: dict[tuple[int, int], frozenset[int]]
+
+    # Every node a rule can be keyed on. Derived rather than passed in so it
+    # can never drift from the rules it summarises.
+    via_nodes: frozenset[int] = field(init=False)
+
+    def __post_init__(self) -> None:
+        via_nodes = {via_node_id for _, via_node_id, _ in self.blocked}
+        via_nodes.update(via_node_id for _, via_node_id in self.only_allowed)
+
+        object.__setattr__(self, "via_nodes", frozenset(via_nodes))
 
 
 EMPTY_TURN_RULES = TurnRules(blocked={}, only_allowed={})
