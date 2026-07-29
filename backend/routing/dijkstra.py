@@ -27,16 +27,14 @@ def shortest_path(
     start_state = (start, None)
     distances = {start_state: 0.0}
     previous: dict[tuple[int, int | None], tuple[tuple[int, int | None], int]] = {}
-    queue = [(0.0, start, None)]
-
-    edges_by_id = {edge.id: edge for edges in graph.values() for edge in edges}
-
-    for edges in extra_edges.values():
-        for edge in edges:
-            edges_by_id[edge.id] = edge
+    # The incoming edge travels with its own queue entry, so the search never
+    # needs a lookup table over every edge in the graph.
+    queue = [(0.0, start, None, None)]
 
     while queue:
-        current_cost, current_node, incoming_edge_id = heapq.heappop(queue)
+        current_cost, current_node, incoming_edge_id, incoming_edge = heapq.heappop(
+            queue
+        )
         current_state = (current_node, incoming_edge_id)
 
         if current_cost > distances[current_state]:
@@ -46,10 +44,6 @@ def shortest_path(
             nodes, edge_ids = build_path(previous, start_state, current_state)
 
             return Path(nodes=nodes, edge_ids=edge_ids, total_cost=current_cost)
-
-        incoming_edge = (
-            edges_by_id[incoming_edge_id] if incoming_edge_id is not None else None
-        )
 
         edges = [*graph.get(current_node, []), *extra_edges.get(current_node, ())]
 
@@ -74,7 +68,7 @@ def shortest_path(
             if new_cost < known_cost:
                 distances[next_state] = new_cost
                 previous[next_state] = (current_state, edge.id)
-                heapq.heappush(queue, (new_cost, edge.target, edge.id))
+                heapq.heappush(queue, (new_cost, edge.target, edge.id, edge))
 
     return None
 
