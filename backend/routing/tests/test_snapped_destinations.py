@@ -2,12 +2,12 @@ import pytest
 from django.contrib.gis.geos import LineString, Point
 
 from routing import services
-from routing.dijkstra import shortest_path
+from routing.dijkstra import shortest_route
 from routing.geo import distance_meters
 from routing.heuristics import build_travel_time_heuristic
 from routing.loaders import (
-    load_graph_from_database,
     load_node_positions,
+    load_road_graph,
     load_top_speed_meters_per_second,
 )
 from routing.models import RoadEdge, RoadNode
@@ -81,22 +81,20 @@ def route_costs(origin_lonlat, destination_lonlat):
     """Return the cost A* finds and the cost plain Dijkstra finds."""
     origin = nearest_edge(*origin_lonlat)
     destination = nearest_edge(*destination_lonlat)
-    extra_edges, _ = services.build_virtual_edges(origin, destination)
+    ends = services.build_route_ends(origin, destination)
 
-    graph = load_graph_from_database()
+    graph = load_road_graph()
     heuristic = build_travel_time_heuristic(
-        load_node_positions(),
+        load_node_positions(graph),
         load_top_speed_meters_per_second(),
         destination.longitude,
         destination.latitude,
     )
 
-    arguments = (graph, services.ORIGIN_NODE_ID, services.DESTINATION_NODE_ID)
-
-    with_heuristic = shortest_path(
-        *arguments, extra_edges=extra_edges, heuristic=heuristic
+    with_heuristic = shortest_route(
+        graph, ends.starts, ends.finishes, heuristic=heuristic
     )
-    without = shortest_path(*arguments, extra_edges=extra_edges)
+    without = shortest_route(graph, ends.starts, ends.finishes)
 
     assert with_heuristic is not None
     assert without is not None
@@ -130,24 +128,27 @@ INTERIOR_POINTS = [
 
 
 @pytest.mark.parametrize("destination", INTERIOR_POINTS)
-def test_estimate_never_exceeds_the_connector_it_bounds(bent_graph, destination):
-    """The estimate at an endpoint must not exceed its connector cost."""
+def test_estimate_never_exceeds_the_finish_hop_it_bounds(bent_graph, destination):
+    """The estimate at a finish node must not exceed that node's hop cost."""
     snapped = nearest_edge(*destination)
-    connectors, _ = services.build_destination_connector_edges(
+    finishes, _ = services.build_finishes(
         snapped,
         services.has_reverse_edge(snapped),
     )
+    graph = load_road_graph()
     heuristic = build_travel_time_heuristic(
-        load_node_positions(),
+        load_node_positions(graph),
         load_top_speed_meters_per_second(),
         snapped.longitude,
         snapped.latitude,
     )
 
-    assert len(connectors) == 2
+    assert len(finishes) == 2
 
-    for connector in connectors:
-        assert heuristic(connector.source) <= connector.cost + 1e-9
+    for finish in finishes:
+        index = graph.index_of[finish.node_id]
+
+        assert heuristic(index) <= finish.cost + 1e-9
 
 
 @pytest.mark.parametrize(

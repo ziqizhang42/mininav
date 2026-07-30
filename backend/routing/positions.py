@@ -1,38 +1,27 @@
 from array import array
-from bisect import bisect_left
 from dataclasses import dataclass
-from typing import Protocol
-
-Position = tuple[float, float, float]
-
-
-class NodePositions(Protocol):
-    def get(self, node_id: int, /) -> Position | None: ...
 
 
 @dataclass(frozen=True, slots=True)
-class PackedNodePositions:
-    """Node positions kept in flat arrays (instead of an object per node).
+class NodePositions:
+    """Node positions in flat arrays, addressed by the graph's dense index.
 
-    `node_ids` must be sorted, and holds one entry per node. `coordinates`
-    holds three entries per node, in the same order.
+    One entry per graph node, in graph index order, so an estimate reads a
+    position with an array index rather than searching for an OSM id. Indexes
+    past the end belong to the synthetic nodes a single request invents, which
+    have no position of their own; a reader is expected to check the length
+    itself, as `build_travel_time_heuristic` does.
     """
 
-    node_ids: array
-    coordinates: array
+    x: array
+    y: array
+    z: array
 
-    def get(self, node_id: int, /) -> Position | None:
-        node_ids = self.node_ids
-        index = bisect_left(node_ids, node_id)
 
-        if index == len(node_ids) or node_ids[index] != node_id:
-            return None
-
-        coordinates = self.coordinates
-        offset = index * 3
-
-        return (
-            coordinates[offset],
-            coordinates[offset + 1],
-            coordinates[offset + 2],
-        )
+def empty_positions(node_count: int) -> NodePositions:
+    """Allocate room for one position per node, all at the earth's centre."""
+    return NodePositions(
+        x=array("d", [0.0]) * node_count,
+        y=array("d", [0.0]) * node_count,
+        z=array("d", [0.0]) * node_count,
+    )

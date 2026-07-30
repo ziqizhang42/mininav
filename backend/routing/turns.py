@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 
-from routing.graph import Edge
+from routing.graph import NO_WAY_ID
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,14 +54,20 @@ def load_turn_rules_from_database() -> TurnRules:
 def permits_turn(
     rules: TurnRules,
     *,
-    incoming_way_id: int | None,
-    incoming_source_node_id: int | None,
+    incoming_way_id: int,
+    incoming_source_node_id: int,
     via_node_id: int,
-    outgoing_edge: Edge,
+    outgoing_way_id: int,
+    outgoing_target_node_id: int,
 ) -> bool:
-    outgoing_way_id = outgoing_edge.osm_way_id
+    """Decide whether a movement through `via_node_id` is allowed.
 
-    if incoming_way_id is None or outgoing_way_id is None:
+    Ways and nodes arrive as plain ids rather than as an edge, so a caller
+    holding the graph in flat arrays does not have to build an object to ask. A
+    rule names both of its ways, so NO_WAY_ID on either side of the movement
+    means no rule can match it.
+    """
+    if incoming_way_id == NO_WAY_ID or outgoing_way_id == NO_WAY_ID:
         return True
 
     blocked_restrictions = rules.blocked.get(
@@ -71,7 +77,7 @@ def permits_turn(
 
     if blocked_restrictions:
         if blocked_restrictions == {"no_u_turn"}:
-            return outgoing_edge.target != incoming_source_node_id
+            return outgoing_target_node_id != incoming_source_node_id
 
         return False
 

@@ -3,83 +3,153 @@ from array import array
 from django.db import connection
 
 from routing.geo import earth_centred_position
-from routing.graph import Edge, Graph
-from routing.models import RoadEdge
-from routing.positions import PackedNodePositions
+from routing.graph import NO_WAY_ID, RoadGraph
+from routing.positions import NodePositions, empty_positions
+
+CHUNK_SIZE = 10_000
 
 
-def load_graph_from_database() -> Graph:
-    graph: Graph = {}
+def load_road_graph() -> RoadGraph:
+    """Load the routing graph straight into the flat arrays it is searched in.
 
-    # Only fetch routing fields
-    rows = RoadEdge.objects.values_list(
-        "id",
-        "source_id",
-        "target_id",
-        "cost_seconds",
-        "osm_way_id",
-    ).iterator(chunk_size=10_000)
+    Nothing per-edge is ever built in Python: the row stream is written into
+    arrays that are already the right size, which is why this holds a fraction
+    of the memory an object per edge would.
+    """
+    node_ids = load_node_ids()
+    node_count = len(node_ids)
+    index_of = {node_id: index for index, node_id in enumerate(node_ids)}
 
-    for edge_id, source, target, cost, osm_way_id in rows:
-        edge = Edge(
-            id=edge_id,
-            source=source,
-            target=target,
-            cost=cost,
-            osm_way_id=osm_way_id,
-        )
+    offsets = load_out_edge_offsets(index_of, node_count)
+    edge_count = offsets[node_count]
 
-        graph.setdefault(source, []).append(edge)
-        graph.setdefault(target, [])
+    sources = array("i", [0]) * edge_count
+    targets = array("i", [0]) * edge_count
+    costs = array("d", [0.0]) * edge_count
+    edge_ids = array("q", [0]) * edge_count
+    way_ids = array("q", [0]) * edge_count
 
-    return graph
+    # The next free slot in each node's run, so rows can arrive in any order.
+    next_slot = array("i", offsets[:node_count])
 
-
-def load_node_positions() -> PackedNodePositions:
-    count_sql = "SELECT count(*) FROM road_nodes"
-    rows_sql = """
-        SELECT osm_id, ST_X(location), ST_Y(location)
-        FROM road_nodes
-        ORDER BY osm_id
+    sql = """
+        SELECT source_node_id, target_node_id, id, cost_seconds, osm_way_id
+        FROM road_edges
     """
 
+    with connection.chunked_cursor() as cursor:
+        cursor.execute(sql)
+
+        while rows := cursor.fetchmany(CHUNK_SIZE):
+            for source_node_id, target_node_id, edge_id, cost, way_id in rows:
+                source = index_of[source_node_id]
+                slot = next_slot[source]
+
+                sources[slot] = source
+                targets[slot] = index_of[target_node_id]
+                costs[slot] = cost
+                edge_ids[slot] = edge_id
+                way_ids[slot] = NO_WAY_ID if way_id is None else way_id
+
+                next_slot[source] = slot + 1
+
+    return RoadGraph(
+        index_of=index_of,
+        node_ids=node_ids,
+        offsets=offsets,
+        sources=sources,
+        targets=targets,
+        costs=costs,
+        edge_ids=edge_ids,
+        way_ids=way_ids,
+    )
+
+
+def load_node_ids() -> array:
+    """Return every node id, sorted, which fixes the graph's index order."""
     with connection.cursor() as cursor:
-        cursor.execute(count_sql)
+        cursor.execute("SELECT count(*) FROM road_nodes")
         node_count = cursor.fetchone()[0]
 
-    node_ids = array("q", bytes(8 * node_count))
-    coordinates = array("d", bytes(24 * node_count))
-
+    node_ids = array("q", [0]) * node_count
     index = 0
 
     with connection.chunked_cursor() as cursor:
-        cursor.execute(rows_sql)
+        cursor.execute("SELECT osm_id FROM road_nodes ORDER BY osm_id")
 
-        while rows := cursor.fetchmany(10_000):
-            for osm_id, longitude, latitude in rows:
-                position = earth_centred_position(longitude, latitude)
-
+        while rows := cursor.fetchmany(CHUNK_SIZE):
+            for (osm_id,) in rows:
                 if index < node_count:
                     node_ids[index] = osm_id
-                    offset = index * 3
-                    (
-                        coordinates[offset],
-                        coordinates[offset + 1],
-                        coordinates[offset + 2],
-                    ) = position
                 else:
                     node_ids.append(osm_id)
-                    coordinates.extend(position)
 
                 index += 1
 
-    # Trailing zeroes would break the sort order that lookups binary search
-    # over, so anything the count over-allocated has to go.
-    if index < node_count:
-        del node_ids[index:]
-        del coordinates[index * 3 :]
+    # Trailing zeroes would claim to be nodes, so anything the count
+    # over-allocated has to go.
+    del node_ids[index:]
 
-    return PackedNodePositions(node_ids=node_ids, coordinates=coordinates)
+    return node_ids
+
+
+def load_out_edge_offsets(index_of: dict[int, int], node_count: int) -> array:
+    """Return where each node's run of outgoing edges starts.
+
+    Counting first means the edge arrays can be allocated once at their final
+    size, and each row then goes straight to its slot.
+    """
+    offsets = array("i", [0]) * (node_count + 1)
+
+    sql = """
+        SELECT source_node_id, count(*)
+        FROM road_edges
+        GROUP BY source_node_id
+    """
+
+    with connection.chunked_cursor() as cursor:
+        cursor.execute(sql)
+
+        while rows := cursor.fetchmany(CHUNK_SIZE):
+            for source_node_id, out_degree in rows:
+                offsets[index_of[source_node_id] + 1] = out_degree
+
+    total = 0
+
+    for index in range(1, node_count + 1):
+        total += offsets[index]
+        offsets[index] = total
+
+    return offsets
+
+
+def load_node_positions(graph: RoadGraph) -> NodePositions:
+    """Load node positions in the graph's index order."""
+    positions = empty_positions(graph.node_count)
+    index_of = graph.index_of
+    x = positions.x
+    y = positions.y
+    z = positions.z
+
+    sql = "SELECT osm_id, ST_X(location), ST_Y(location) FROM road_nodes"
+
+    with connection.chunked_cursor() as cursor:
+        cursor.execute(sql)
+
+        while rows := cursor.fetchmany(CHUNK_SIZE):
+            for osm_id, longitude, latitude in rows:
+                index = index_of.get(osm_id)
+
+                # The graph indexes the same node table, so this only guards
+                # against a node appearing between the two queries.
+                if index is None:
+                    continue
+
+                x[index], y[index], z[index] = earth_centred_position(
+                    longitude, latitude
+                )
+
+    return positions
 
 
 def load_top_speed_meters_per_second() -> float:

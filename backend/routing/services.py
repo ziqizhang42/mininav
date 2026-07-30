@@ -4,25 +4,23 @@ from functools import lru_cache
 
 from django.db import connection
 
-from routing.dijkstra import shortest_path
-from routing.graph import Edge, Graph
+from routing.dijkstra import RouteEnd, shortest_route
+from routing.graph import RoadGraph
 from routing.heuristics import build_travel_time_heuristic
 from routing.instructions import RouteSegment, RouteStep, build_route_steps
 from routing.loaders import (
-    load_graph_from_database,
     load_node_positions,
+    load_road_graph,
     load_top_speed_meters_per_second,
 )
 from routing.models import RoadEdge
-from routing.positions import PackedNodePositions
+from routing.positions import NodePositions
 from routing.snapping import SnappedEdge, nearest_edge
 from routing.turns import TurnRules, load_turn_rules_from_database
 
-# Negative IDs are synthetic route-only graph elements (never stored in the DB)
-# or small negative nodes IDs are for testing
-ORIGIN_NODE_ID = -9_000_000_000_000_001
-DESTINATION_NODE_ID = -9_000_000_000_000_002
-
+# A route's first and last hops cover part of an edge, so they are not any of the
+# edges in the database. Negative ids name them, which is also how
+# `build_route_geometry` tells them apart from real ones.
 ORIGIN_TO_TARGET_EDGE_ID = -1
 ORIGIN_TO_SOURCE_EDGE_ID = -2
 SOURCE_TO_DESTINATION_EDGE_ID = -3
@@ -51,9 +49,23 @@ class VirtualRouteEdge:
     metadata_edge_id: int
 
 
+@dataclass(frozen=True, slots=True)
+class RouteEnds:
+    """How a request's two snapped points attach to the graph.
+
+    `virtual_edges` holds the geometry of every part-edge hop named here, keyed
+    by the id the hop is reported under.
+    """
+
+    starts: tuple[RouteEnd, ...]
+    finishes: tuple[RouteEnd, ...]
+    virtual_edges: dict[int, VirtualRouteEdge]
+    direct_edge_id: int | None
+
+
 @lru_cache(maxsize=1)
-def get_graph() -> Graph:
-    return load_graph_from_database()
+def get_graph() -> RoadGraph:
+    return load_road_graph()
 
 
 @lru_cache(maxsize=1)
@@ -62,8 +74,9 @@ def get_turn_rules() -> TurnRules:
 
 
 @lru_cache(maxsize=1)
-def get_node_positions() -> PackedNodePositions:
-    return load_node_positions()
+def get_node_positions() -> NodePositions:
+    # Indexed by the graph's node order, so it is only valid for that graph.
+    return load_node_positions(get_graph())
 
 
 @lru_cache(maxsize=1)
@@ -80,10 +93,11 @@ def calculate_route(
     origin = nearest_edge(origin_longitude, origin_latitude)
     destination = nearest_edge(destination_longitude, destination_latitude)
 
-    extra_edges, virtual_route_edges = build_virtual_edges(origin, destination)
+    ends = build_route_ends(origin, destination)
+    virtual_route_edges = ends.virtual_edges
 
     # Aim the search at the snapped destination rather than the requested point,
-    # since the snapped point is where the destination node actually sits.
+    # since the snapped point is where the route actually has to end.
     heuristic = build_travel_time_heuristic(
         get_node_positions(),
         get_top_speed_meters_per_second(),
@@ -91,19 +105,30 @@ def calculate_route(
         destination.latitude,
     )
 
-    path = shortest_path(
+    path = shortest_route(
         get_graph(),
-        ORIGIN_NODE_ID,
-        DESTINATION_NODE_ID,
-        extra_edges=extra_edges,
+        ends.starts,
+        ends.finishes,
         turn_rules=get_turn_rules(),
         heuristic=heuristic,
     )
 
-    if path is None:
+    direct_edge_id = ends.direct_edge_id
+    direct = None if direct_edge_id is None else virtual_route_edges[direct_edge_id]
+
+    if direct is not None and (path is None or direct.cost_seconds <= path.total_cost):
+        # Both points on one stretch of road: the route never reaches a node.
+        node_ids: tuple[int, ...] = ()
+        edge_ids = (direct_edge_id,)
+        duration_seconds = direct.cost_seconds
+    elif path is not None:
+        node_ids = path.nodes
+        edge_ids = path.edge_ids
+        duration_seconds = path.total_cost
+    else:
         raise ValueError("No route exists between these locations")
 
-    coordinates, distance = build_route_geometry(path.edge_ids, virtual_route_edges)
+    coordinates, distance = build_route_geometry(edge_ids, virtual_route_edges)
 
     if len(coordinates) < 2:
         coordinates = [
@@ -111,16 +136,16 @@ def calculate_route(
             [destination.longitude, destination.latitude],
         ]
 
-    segments = build_route_segments(path.edge_ids, virtual_route_edges)
+    segments = build_route_segments(edge_ids, virtual_route_edges)
     steps = build_route_steps(segments)
 
     return RouteResult(
         origin=origin,
         destination=destination,
-        node_ids=path.nodes,
-        edge_ids=path.edge_ids,
+        node_ids=node_ids,
+        edge_ids=edge_ids,
         distance_meters=distance,
-        duration_seconds=path.total_cost,
+        duration_seconds=duration_seconds,
         geometry={
             "type": "LineString",
             "coordinates": coordinates,
@@ -129,54 +154,49 @@ def calculate_route(
     )
 
 
-def build_virtual_edges(
-    origin: SnappedEdge,
-    destination: SnappedEdge,
-) -> tuple[dict[int, tuple[Edge, ...]], dict[int, VirtualRouteEdge]]:
+def build_route_ends(origin: SnappedEdge, destination: SnappedEdge) -> RouteEnds:
     origin_has_reverse = has_reverse_edge(origin)
-    destination_has_reverse = has_reverse_edge(destination)
 
-    origin_edges, virtual_route_edges = build_origin_connector_edges(
-        origin,
-        origin_has_reverse,
-    )
+    starts, virtual_edges = build_starts(origin, origin_has_reverse)
+    finishes, finish_edges = build_finishes(destination, has_reverse_edge(destination))
+    virtual_edges.update(finish_edges)
 
-    destination_edges, destination_virtual_edges = build_destination_connector_edges(
-        destination,
-        destination_has_reverse,
-    )
-    virtual_route_edges.update(destination_virtual_edges)
-
-    extra_edges: dict[int, tuple[Edge, ...]] = {
-        ORIGIN_NODE_ID: origin_edges,
-    }
-
-    add_extra_edges_by_source(extra_edges, destination_edges)
-
-    add_direct_edges(
-        extra_edges,
-        virtual_route_edges,
+    direct_edge_id, direct_edge = build_direct_hop(
         origin,
         destination,
         origin_has_reverse,
     )
 
-    return extra_edges, virtual_route_edges
+    if direct_edge is not None:
+        virtual_edges[direct_edge_id] = direct_edge
+
+    return RouteEnds(
+        starts=starts,
+        finishes=finishes,
+        virtual_edges=virtual_edges,
+        direct_edge_id=direct_edge_id,
+    )
 
 
-def build_origin_connector_edges(
+def build_starts(
     origin: SnappedEdge,
     has_reverse: bool,
-) -> tuple[tuple[Edge, ...], dict[int, VirtualRouteEdge]]:
+) -> tuple[tuple[RouteEnd, ...], dict[int, VirtualRouteEdge]]:
+    """Where a route leaving the origin can join the graph.
+
+    Leaving the snapped point means covering the rest of its edge to reach that
+    edge's far node. Where the same road also exists in the other direction, the
+    point can instead double back to the near node.
+    """
     remaining = 1 - origin.physical_fraction
 
-    edges = [
-        Edge(
-            id=ORIGIN_TO_TARGET_EDGE_ID,
-            source=ORIGIN_NODE_ID,
-            target=origin.target_node_id,
+    starts = [
+        RouteEnd(
+            node_id=origin.target_node_id,
             cost=origin.cost_seconds * remaining,
-            osm_way_id=origin.osm_way_id,
+            edge_id=ORIGIN_TO_TARGET_EDGE_ID,
+            way_id=origin.osm_way_id,
+            far_node_id=origin.source_node_id,
         )
     ]
 
@@ -189,16 +209,14 @@ def build_origin_connector_edges(
         ),
     }
 
-    # A reverse edge means this snapped point can leave the physical segment
-    # toward either endpoint
     if has_reverse:
-        edges.append(
-            Edge(
-                id=ORIGIN_TO_SOURCE_EDGE_ID,
-                source=ORIGIN_NODE_ID,
-                target=origin.source_node_id,
+        starts.append(
+            RouteEnd(
+                node_id=origin.source_node_id,
                 cost=origin.cost_seconds * origin.physical_fraction,
-                osm_way_id=origin.osm_way_id,
+                edge_id=ORIGIN_TO_SOURCE_EDGE_ID,
+                way_id=origin.osm_way_id,
+                far_node_id=origin.target_node_id,
             )
         )
 
@@ -211,22 +229,27 @@ def build_origin_connector_edges(
             metadata_edge_id=origin.edge_id,
         )
 
-    return tuple(edges), virtual_edges
+    return tuple(starts), virtual_edges
 
 
-def build_destination_connector_edges(
+def build_finishes(
     destination: SnappedEdge,
     has_reverse: bool,
-) -> tuple[tuple[Edge, ...], dict[int, VirtualRouteEdge]]:
+) -> tuple[tuple[RouteEnd, ...], dict[int, VirtualRouteEdge]]:
+    """Which graph nodes a route can reach the destination from.
+
+    The mirror of `build_starts`: the near node of the destination's edge always
+    reaches it, and the far node does too where the road runs both ways.
+    """
     covered = destination.physical_fraction
 
-    edges = [
-        Edge(
-            id=SOURCE_TO_DESTINATION_EDGE_ID,
-            source=destination.source_node_id,
-            target=DESTINATION_NODE_ID,
+    finishes = [
+        RouteEnd(
+            node_id=destination.source_node_id,
             cost=destination.cost_seconds * covered,
-            osm_way_id=destination.osm_way_id,
+            edge_id=SOURCE_TO_DESTINATION_EDGE_ID,
+            way_id=destination.osm_way_id,
+            far_node_id=destination.target_node_id,
         )
     ]
 
@@ -239,16 +262,14 @@ def build_destination_connector_edges(
         ),
     }
 
-    # A reverse edge means the destination can be reached from either
-    # endpoint of the segment
     if has_reverse:
-        edges.append(
-            Edge(
-                id=TARGET_TO_DESTINATION_EDGE_ID,
-                source=destination.target_node_id,
-                target=DESTINATION_NODE_ID,
+        finishes.append(
+            RouteEnd(
+                node_id=destination.target_node_id,
                 cost=destination.cost_seconds * (1 - covered),
-                osm_way_id=destination.osm_way_id,
+                edge_id=TARGET_TO_DESTINATION_EDGE_ID,
+                way_id=destination.osm_way_id,
+                far_node_id=destination.source_node_id,
             )
         )
 
@@ -261,95 +282,58 @@ def build_destination_connector_edges(
             metadata_edge_id=destination.edge_id,
         )
 
-    return tuple(edges), virtual_edges
+    return tuple(finishes), virtual_edges
 
 
-def add_extra_edges_by_source(
-    extra_edges: dict[int, tuple[Edge, ...]],
-    edges: tuple[Edge, ...],
-) -> None:
-    for edge in edges:
-        extra_edges[edge.source] = (*extra_edges.get(edge.source, ()), edge)
-
-
-def add_direct_edges(
-    extra_edges: dict[int, tuple[Edge, ...]],
-    virtual_route_edges: dict[int, VirtualRouteEdge],
+def build_direct_hop(
     origin: SnappedEdge,
     destination: SnappedEdge,
     origin_has_reverse: bool,
-) -> None:
-    destination_fraction_on_origin = destination.fraction
-    destination_physical_on_origin = destination.physical_fraction
-    same_segment = same_physical_segment(origin, destination)
+) -> tuple[int | None, VirtualRouteEdge | None]:
+    """The hop straight from origin to destination along one stretch of road.
 
-    # Same physical segment can be represented by opposite directed rows
-    # compare fractions in origin's direction
-    if origin.edge_id != destination.edge_id and same_segment:
-        destination_fraction_on_origin = 1 - destination.fraction
-        destination_physical_on_origin = 1 - destination.physical_fraction
+    Such a route reaches no graph node, so the search cannot find it. It is
+    offered alongside whatever the search does find.
+    """
+    if not same_physical_segment(origin, destination):
+        return None, None
+
+    destination_fraction = destination.fraction
+    destination_physical = destination.physical_fraction
+
+    # One physical segment can be stored as two opposite directed rows, so
+    # measure the destination in the origin's direction before comparing.
+    if origin.edge_id != destination.edge_id:
+        destination_fraction = 1 - destination_fraction
+        destination_physical = 1 - destination_physical
 
     # Ordering is the same in either measure, so the cheaper degree fraction
     # decides direction while the physical one sizes the hop.
-    if same_segment and origin.fraction <= destination_fraction_on_origin:
-        physical_span = destination_physical_on_origin - origin.physical_fraction
-        direct_cost = origin.cost_seconds * physical_span
-
-        extra_edges[ORIGIN_NODE_ID] = (
-            *extra_edges[ORIGIN_NODE_ID],
-            Edge(
-                id=DIRECT_FORWARD_EDGE_ID,
-                source=ORIGIN_NODE_ID,
-                target=DESTINATION_NODE_ID,
-                cost=direct_cost,
-                osm_way_id=destination.osm_way_id,
-            ),
+    if origin.fraction <= destination_fraction:
+        edge_id = DIRECT_FORWARD_EDGE_ID
+        physical_span = destination_physical - origin.physical_fraction
+        coordinates = edge_substring(
+            origin.edge_id,
+            origin.fraction,
+            destination_fraction,
         )
-
-        virtual_route_edges[DIRECT_FORWARD_EDGE_ID] = VirtualRouteEdge(
-            coordinates=edge_substring(
-                origin.edge_id,
-                origin.fraction,
-                destination_fraction_on_origin,
-            ),
-            length_meters=origin.length_meters * physical_span,
-            cost_seconds=direct_cost,
-            metadata_edge_id=origin.edge_id,
+    elif origin_has_reverse:
+        edge_id = DIRECT_REVERSE_EDGE_ID
+        physical_span = origin.physical_fraction - destination_physical
+        coordinates = list(
+            reversed(
+                edge_substring(origin.edge_id, destination_fraction, origin.fraction)
+            )
         )
+    else:
+        return None, None
 
-    if (
-        same_segment
-        and origin.fraction > destination_fraction_on_origin
-        and origin_has_reverse
-    ):
-        physical_span = origin.physical_fraction - destination_physical_on_origin
-        direct_cost = origin.cost_seconds * physical_span
-
-        extra_edges[ORIGIN_NODE_ID] = (
-            *extra_edges[ORIGIN_NODE_ID],
-            Edge(
-                id=DIRECT_REVERSE_EDGE_ID,
-                source=ORIGIN_NODE_ID,
-                target=DESTINATION_NODE_ID,
-                cost=direct_cost,
-                osm_way_id=origin.osm_way_id,
-            ),
-        )
-
-        virtual_route_edges[DIRECT_REVERSE_EDGE_ID] = VirtualRouteEdge(
-            coordinates=list(
-                reversed(
-                    edge_substring(
-                        origin.edge_id,
-                        destination_fraction_on_origin,
-                        origin.fraction,
-                    )
-                )
-            ),
-            length_meters=origin.length_meters * physical_span,
-            cost_seconds=direct_cost,
-            metadata_edge_id=origin.edge_id,
-        )
+    return edge_id, VirtualRouteEdge(
+        coordinates=coordinates,
+        length_meters=origin.length_meters * physical_span,
+        cost_seconds=origin.cost_seconds * physical_span,
+        metadata_edge_id=origin.edge_id,
+    )
 
 
 def build_route_geometry(

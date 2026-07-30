@@ -16,25 +16,29 @@ def build_travel_time_heuristic(
     The estimate is the straight line to the goal covered at the fastest speed
     anywhere on the network, so it can never exceed the real driving time: a
     route is at least as long as the straight line, and every edge of it is
-    costed at no more than the top speed. Nodes without a known position fall back to zero.
+    costed at no more than the top speed.
+
+    The argument is a dense graph node index, not an OSM id, so the position is
+    a direct array read. A request's synthetic nodes sit past the end of the
+    arrays and fall back to zero, which is admissible.
+    The destination node is exactly the point being measured to.
     """
     goal_x, goal_y, goal_z = earth_centred_position(goal_longitude, goal_latitude)
     seconds_per_meter = 1 / top_speed_meters_per_second
 
-    # The search asks about a node barely more than once, so no need to memoising the estimate.
-    lookup = positions.get
+    x = positions.x
+    y = positions.y
+    z = positions.z
+    limit = len(x)
 
-    def heuristic(node: int) -> float:
-        position = lookup(node)
-
-        if position is None:
+    def heuristic(index: int) -> float:
+        if index >= limit:
             return 0.0
 
-        x, y, z = position
-        x -= goal_x
-        y -= goal_y
-        z -= goal_z
+        dx = x[index] - goal_x
+        dy = y[index] - goal_y
+        dz = z[index] - goal_z
 
-        return sqrt(x * x + y * y + z * z) * seconds_per_meter
+        return sqrt(dx * dx + dy * dy + dz * dz) * seconds_per_meter
 
     return heuristic
