@@ -40,6 +40,20 @@ jobs:
   backend:
     name: Backend Check
     runs-on: ubuntu-latest
+    services:
+      db:
+        image: postgis/postgis:18-3.6
+        env:
+          POSTGRES_DB: mininav
+          POSTGRES_USER: mininav
+          POSTGRES_PASSWORD: mininav
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mininav -d mininav"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
       DJANGO_DEBUG: "false"
@@ -81,6 +95,7 @@ jobs:
       - name: Run backend tests
         run: >
           docker run --rm
+          --network host
           -e DJANGO_ALLOWED_HOSTS
           -e DJANGO_DEBUG
           -e DJANGO_SECRET_KEY
