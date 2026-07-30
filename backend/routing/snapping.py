@@ -13,7 +13,17 @@ class SnappedEdge:
     longitude: float
     latitude: float
     distance_meters: float
+
+    # How far along the edge the point sits, measured in the degrees the
+    # geometry is stored in. Correct for slicing geometry and for comparing
+    # positions, but not proportional to physical distance.
     fraction: float
+
+    # The same position as a share of the edge's real length. Costs and lengths
+    # must use this one. A compressed edge that changes direction covers very
+    # different ground per degree on each of its parts.
+    physical_fraction: float
+
     length_meters: float
     cost_seconds: float
 
@@ -63,6 +73,19 @@ def nearest_edge(longitude: float, latitude: float) -> SnappedEdge:
                 length_meters,
                 cost_seconds,
                 fraction,
+                -- Spherical, not spheroidal: PostGIS derives its sphere from
+                -- the WGS84 mean radius, which is the same sphere the importer
+                -- measured `length_meters` on. Spheroidal length disagrees with
+                -- it by up to a third of a percent, enough to misprice a
+                -- connector. Note that a literal per-cent sign here would be
+                -- read as a query placeholder.
+                COALESCE(
+                    ST_Length(
+                        ST_LineSubstring(geometry, 0, fraction)::geography,
+                        false
+                    ) / NULLIF(ST_Length(geometry::geography, false), 0),
+                    0
+                ) AS physical_fraction,
                 ST_LineInterpolatePoint(geometry, fraction) AS location,
                 requested_location
             FROM candidates
@@ -77,6 +100,7 @@ def nearest_edge(longitude: float, latitude: float) -> SnappedEdge:
             ST_Y(location),
             ST_Distance(location::geography, requested_location::geography),
             fraction,
+            physical_fraction,
             length_meters,
             cost_seconds
         FROM snapped
@@ -99,6 +123,7 @@ def nearest_edge(longitude: float, latitude: float) -> SnappedEdge:
         latitude=row[6],
         distance_meters=row[7],
         fraction=row[8],
-        length_meters=row[9],
-        cost_seconds=row[10],
+        physical_fraction=row[9],
+        length_meters=row[10],
+        cost_seconds=row[11],
     )

@@ -6,9 +6,15 @@ from django.db import connection
 
 from routing.dijkstra import shortest_path
 from routing.graph import Edge, Graph
+from routing.heuristics import build_travel_time_heuristic
 from routing.instructions import RouteSegment, RouteStep, build_route_steps
-from routing.loaders import load_graph_from_database
+from routing.loaders import (
+    load_graph_from_database,
+    load_node_positions,
+    load_top_speed_meters_per_second,
+)
 from routing.models import RoadEdge
+from routing.positions import PackedNodePositions
 from routing.snapping import SnappedEdge, nearest_edge
 from routing.turns import TurnRules, load_turn_rules_from_database
 
@@ -55,6 +61,16 @@ def get_turn_rules() -> TurnRules:
     return load_turn_rules_from_database()
 
 
+@lru_cache(maxsize=1)
+def get_node_positions() -> PackedNodePositions:
+    return load_node_positions()
+
+
+@lru_cache(maxsize=1)
+def get_top_speed_meters_per_second() -> float:
+    return load_top_speed_meters_per_second()
+
+
 def calculate_route(
     origin_longitude: float,
     origin_latitude: float,
@@ -66,12 +82,22 @@ def calculate_route(
 
     extra_edges, virtual_route_edges = build_virtual_edges(origin, destination)
 
+    # Aim the search at the snapped destination rather than the requested point,
+    # since the snapped point is where the destination node actually sits.
+    heuristic = build_travel_time_heuristic(
+        get_node_positions(),
+        get_top_speed_meters_per_second(),
+        destination.longitude,
+        destination.latitude,
+    )
+
     path = shortest_path(
         get_graph(),
         ORIGIN_NODE_ID,
         DESTINATION_NODE_ID,
         extra_edges=extra_edges,
         turn_rules=get_turn_rules(),
+        heuristic=heuristic,
     )
 
     if path is None:
@@ -142,12 +168,14 @@ def build_origin_connector_edges(
     origin: SnappedEdge,
     has_reverse: bool,
 ) -> tuple[tuple[Edge, ...], dict[int, VirtualRouteEdge]]:
+    remaining = 1 - origin.physical_fraction
+
     edges = [
         Edge(
             id=ORIGIN_TO_TARGET_EDGE_ID,
             source=ORIGIN_NODE_ID,
             target=origin.target_node_id,
-            cost=origin.cost_seconds * (1 - origin.fraction),
+            cost=origin.cost_seconds * remaining,
             osm_way_id=origin.osm_way_id,
         )
     ]
@@ -155,8 +183,8 @@ def build_origin_connector_edges(
     virtual_edges = {
         ORIGIN_TO_TARGET_EDGE_ID: VirtualRouteEdge(
             coordinates=edge_substring(origin.edge_id, origin.fraction, 1),
-            length_meters=origin.length_meters * (1 - origin.fraction),
-            cost_seconds=origin.cost_seconds * (1 - origin.fraction),
+            length_meters=origin.length_meters * remaining,
+            cost_seconds=origin.cost_seconds * remaining,
             metadata_edge_id=origin.edge_id,
         ),
     }
@@ -169,7 +197,7 @@ def build_origin_connector_edges(
                 id=ORIGIN_TO_SOURCE_EDGE_ID,
                 source=ORIGIN_NODE_ID,
                 target=origin.source_node_id,
-                cost=origin.cost_seconds * origin.fraction,
+                cost=origin.cost_seconds * origin.physical_fraction,
                 osm_way_id=origin.osm_way_id,
             )
         )
@@ -178,8 +206,8 @@ def build_origin_connector_edges(
             coordinates=list(
                 reversed(edge_substring(origin.edge_id, 0, origin.fraction))
             ),
-            length_meters=origin.length_meters * origin.fraction,
-            cost_seconds=origin.cost_seconds * origin.fraction,
+            length_meters=origin.length_meters * origin.physical_fraction,
+            cost_seconds=origin.cost_seconds * origin.physical_fraction,
             metadata_edge_id=origin.edge_id,
         )
 
@@ -190,12 +218,14 @@ def build_destination_connector_edges(
     destination: SnappedEdge,
     has_reverse: bool,
 ) -> tuple[tuple[Edge, ...], dict[int, VirtualRouteEdge]]:
+    covered = destination.physical_fraction
+
     edges = [
         Edge(
             id=SOURCE_TO_DESTINATION_EDGE_ID,
             source=destination.source_node_id,
             target=DESTINATION_NODE_ID,
-            cost=destination.cost_seconds * destination.fraction,
+            cost=destination.cost_seconds * covered,
             osm_way_id=destination.osm_way_id,
         )
     ]
@@ -203,8 +233,8 @@ def build_destination_connector_edges(
     virtual_edges = {
         SOURCE_TO_DESTINATION_EDGE_ID: VirtualRouteEdge(
             coordinates=edge_substring(destination.edge_id, 0, destination.fraction),
-            length_meters=destination.length_meters * destination.fraction,
-            cost_seconds=destination.cost_seconds * destination.fraction,
+            length_meters=destination.length_meters * covered,
+            cost_seconds=destination.cost_seconds * covered,
             metadata_edge_id=destination.edge_id,
         ),
     }
@@ -217,7 +247,7 @@ def build_destination_connector_edges(
                 id=TARGET_TO_DESTINATION_EDGE_ID,
                 source=destination.target_node_id,
                 target=DESTINATION_NODE_ID,
-                cost=destination.cost_seconds * (1 - destination.fraction),
+                cost=destination.cost_seconds * (1 - covered),
                 osm_way_id=destination.osm_way_id,
             )
         )
@@ -226,8 +256,8 @@ def build_destination_connector_edges(
             coordinates=list(
                 reversed(edge_substring(destination.edge_id, destination.fraction, 1))
             ),
-            length_meters=destination.length_meters * (1 - destination.fraction),
-            cost_seconds=destination.cost_seconds * (1 - destination.fraction),
+            length_meters=destination.length_meters * (1 - covered),
+            cost_seconds=destination.cost_seconds * (1 - covered),
             metadata_edge_id=destination.edge_id,
         )
 
@@ -250,17 +280,20 @@ def add_direct_edges(
     origin_has_reverse: bool,
 ) -> None:
     destination_fraction_on_origin = destination.fraction
+    destination_physical_on_origin = destination.physical_fraction
     same_segment = same_physical_segment(origin, destination)
 
     # Same physical segment can be represented by opposite directed rows
     # compare fractions in origin's direction
     if origin.edge_id != destination.edge_id and same_segment:
         destination_fraction_on_origin = 1 - destination.fraction
+        destination_physical_on_origin = 1 - destination.physical_fraction
 
+    # Ordering is the same in either measure, so the cheaper degree fraction
+    # decides direction while the physical one sizes the hop.
     if same_segment and origin.fraction <= destination_fraction_on_origin:
-        direct_cost = origin.cost_seconds * (
-            destination_fraction_on_origin - origin.fraction
-        )
+        physical_span = destination_physical_on_origin - origin.physical_fraction
+        direct_cost = origin.cost_seconds * physical_span
 
         extra_edges[ORIGIN_NODE_ID] = (
             *extra_edges[ORIGIN_NODE_ID],
@@ -279,8 +312,7 @@ def add_direct_edges(
                 origin.fraction,
                 destination_fraction_on_origin,
             ),
-            length_meters=origin.length_meters
-            * (destination_fraction_on_origin - origin.fraction),
+            length_meters=origin.length_meters * physical_span,
             cost_seconds=direct_cost,
             metadata_edge_id=origin.edge_id,
         )
@@ -290,9 +322,8 @@ def add_direct_edges(
         and origin.fraction > destination_fraction_on_origin
         and origin_has_reverse
     ):
-        direct_cost = origin.cost_seconds * (
-            origin.fraction - destination_fraction_on_origin
-        )
+        physical_span = origin.physical_fraction - destination_physical_on_origin
+        direct_cost = origin.cost_seconds * physical_span
 
         extra_edges[ORIGIN_NODE_ID] = (
             *extra_edges[ORIGIN_NODE_ID],
@@ -315,8 +346,7 @@ def add_direct_edges(
                     )
                 )
             ),
-            length_meters=origin.length_meters
-            * (origin.fraction - destination_fraction_on_origin),
+            length_meters=origin.length_meters * physical_span,
             cost_seconds=direct_cost,
             metadata_edge_id=origin.edge_id,
         )

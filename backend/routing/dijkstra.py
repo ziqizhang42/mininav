@@ -1,6 +1,7 @@
 import heapq
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from itertools import count
 
 from routing.graph import Edge, Graph
 from routing.turns import EMPTY_TURN_RULES, TurnRules, permits_turn
@@ -13,30 +14,40 @@ class Path:
     total_cost: float
 
 
-# Dijkstra
+# A*, which degrades to plain Dijkstra when no heuristic is supplied.
 def shortest_path(
     graph: Graph,
     start: int,
     end: int,
     extra_edges: Mapping[int, tuple[Edge, ...]] | None = None,
     turn_rules: TurnRules = EMPTY_TURN_RULES,
+    heuristic: Callable[[int], float] | None = None,
 ) -> Path | None:
     if extra_edges is None:
         extra_edges = {}
 
+    if heuristic is None:
+        heuristic = no_heuristic
+
     start_state = (start, None)
     distances = {start_state: 0.0}
     previous: dict[tuple[int, int | None], tuple[tuple[int, int | None], int]] = {}
+
     # The incoming edge travels with its own queue entry, so the search never
-    # needs a lookup table over every edge in the graph. Entries are only ever
-    # pushed on a strict improvement, so (cost, node, edge id) stays unique and
-    # heapq never has to order the trailing edge itself.
-    queue = [(0.0, start, None, None)]
+    # needs a lookup table over every edge in the graph. The counter keeps
+    # entries totally ordered, so heapq never compares an edge to another.
+    tiebreaker = count()
+    queue = [(heuristic(start), next(tiebreaker), 0.0, start, None, None)]
 
     while queue:
-        current_cost, current_node, incoming_edge_id, incoming_edge = heapq.heappop(
-            queue
-        )
+        (
+            _,
+            _,
+            current_cost,
+            current_node,
+            incoming_edge_id,
+            incoming_edge,
+        ) = heapq.heappop(queue)
         current_state = (current_node, incoming_edge_id)
 
         if current_cost > distances[current_state]:
@@ -73,9 +84,23 @@ def shortest_path(
             if new_cost < known_cost:
                 distances[next_state] = new_cost
                 previous[next_state] = (current_state, edge.id)
-                heapq.heappush(queue, (new_cost, edge.target, next_edge_id, edge))
+                heapq.heappush(
+                    queue,
+                    (
+                        new_cost + heuristic(edge.target),
+                        next(tiebreaker),
+                        new_cost,
+                        edge.target,
+                        next_edge_id,
+                        edge,
+                    ),
+                )
 
     return None
+
+
+def no_heuristic(node: int) -> float:
+    return 0.0
 
 
 def shortest_distance(
