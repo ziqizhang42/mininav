@@ -14,6 +14,12 @@ from routing.api.serializers import (
     SearchQuerySerializer,
     SearchResultSerializer,
 )
+from routing.search import (
+    SearchBounds,
+    SearchFocus,
+    nominatim_search_parameters,
+    rank_search_results,
+)
 from routing.services import calculate_route
 
 
@@ -86,17 +92,11 @@ class SearchView(APIView):
         request_serializer = SearchQuerySerializer(data=request.query_params)
         request_serializer.is_valid(raise_exception=True)
 
-        query = request_serializer.validated_data["q"].strip()
-        params = urlencode(
-            {
-                "q": query,
-                "format": "jsonv2",
-                "limit": 5,
-                "addressdetails": 1,
-                "countrycodes": "ca",
-                "accept-language": "en",
-            }
-        )
+        data = request_serializer.validated_data
+        query = data["q"]
+        bounds = SearchBounds(*data["viewbox"]) if "viewbox" in data else None
+        focus = SearchFocus(*data["focus"]) if "focus" in data else None
+        params = urlencode(nominatim_search_parameters(query, bounds))
 
         url = f"{settings.NOMINATIM_BASE_URL.rstrip('/')}/search?{params}"
         upstream_request = Request(url, headers={"Accept": "application/json"})
@@ -110,30 +110,12 @@ class SearchView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        results = []
-
-        for place in places:
-            try:
-                longitude = float(place["lon"])
-                latitude = float(place["lat"])
-            except KeyError, TypeError, ValueError:
-                continue
-
-            osm_type = place.get("osm_type")
-            osm_id = place.get("osm_id")
-            place_id = place.get("place_id")
-            result_id = f"{osm_type}:{osm_id}" if osm_type and osm_id else str(place_id)
-
-            results.append(
-                {
-                    "id": result_id,
-                    "label": place.get("display_name", query),
-                    "longitude": longitude,
-                    "latitude": latitude,
-                    "category": place.get("category"),
-                    "type": place.get("type"),
-                }
-            )
+        results = rank_search_results(
+            places,
+            query,
+            bounds=bounds,
+            focus=focus,
+        )
 
         response_serializer = SearchResultSerializer(results, many=True)
         return Response(response_serializer.data)

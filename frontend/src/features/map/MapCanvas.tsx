@@ -35,6 +35,7 @@ import {
 import { useMockLocation } from '../guidance/useMockLocation'
 
 import type { SearchField } from '../search/SearchControl'
+import type { SearchBias } from '../search/api'
 
 const ROUTE_SOURCE_ID = 'route'
 const ROUTE_CASING_LAYER_ID = 'route-casing'
@@ -695,6 +696,33 @@ export function MapCanvas() {
     })
   }, [guidanceActive, trackedLocation])
 
+  const getSearchBias = useCallback((): SearchBias | undefined => {
+    const map = mapRef.current
+
+    if (!map) {
+      return trackedLocation ? { focus: trackedLocation.coordinate } : undefined
+    }
+
+    const bounds = map.getBounds()
+    const center = map.getCenter()
+    const trackedCoordinate = trackedLocation?.coordinate
+    const focus =
+      trackedCoordinate &&
+      bounds.contains([trackedCoordinate.longitude, trackedCoordinate.latitude])
+        ? trackedCoordinate
+        : { longitude: center.lng, latitude: center.lat }
+
+    return {
+      viewbox: {
+        west: Math.max(-180, bounds.getWest()),
+        south: Math.max(-90, bounds.getSouth()),
+        east: Math.min(180, bounds.getEast()),
+        north: Math.min(90, bounds.getNorth()),
+      },
+      focus,
+    }
+  }, [trackedLocation])
+
   const successState = routeState.status === 'success' ? routeState : null
   const navigating = guidanceEnabled && successState !== null
   const locationStatus = describeLocationStatus(location, trackedLocation)
@@ -816,6 +844,7 @@ export function MapCanvas() {
                 ? 'Use mock location'
                 : 'Use my current location'
             }
+            getSearchBias={getSearchBias}
             locationStatus={locationStatus}
             waitingForLocation={!trackedLocation}
             onUseCurrentLocation={() => {

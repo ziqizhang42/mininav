@@ -7,7 +7,7 @@ import {
 } from 'react'
 import { LoaderCircle, LocateFixed, MapPin, Search, X } from 'lucide-react'
 
-import { searchPlaces, type SearchResult } from './api'
+import { searchPlaces, type SearchBias, type SearchResult } from './api'
 
 export type SearchField = 'origin' | 'destination'
 
@@ -16,6 +16,7 @@ type Props = {
   destinationLabel: string | null
   currentLocationAvailable: boolean
   currentLocationLabel: string
+  getSearchBias: () => SearchBias | undefined
   onUseCurrentLocation: () => void
   onSelectOrigin: (result: SearchResult) => void
   onSelectDestination: (result: SearchResult) => void
@@ -28,6 +29,7 @@ export function SearchControl({
   destinationLabel,
   currentLocationAvailable,
   currentLocationLabel,
+  getSearchBias,
   onUseCurrentLocation,
   onSelectOrigin,
   onSelectDestination,
@@ -67,7 +69,7 @@ export function SearchControl({
     setStatus('loading')
 
     try {
-      setResults(await searchPlaces(trimmed))
+      setResults(await searchPlaces(trimmed, getSearchBias()))
       setStatus('idle')
     } catch (error) {
       setResults([])

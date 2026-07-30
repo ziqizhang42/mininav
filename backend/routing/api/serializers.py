@@ -63,6 +63,51 @@ class RouteResponseSerializer(serializers.Serializer):
 
 class SearchQuerySerializer(serializers.Serializer):
     q = serializers.CharField(min_length=2, max_length=200)
+    viewbox = serializers.CharField(required=False, max_length=100)
+    focus = serializers.CharField(required=False, max_length=50)
+
+    def validate_q(self, value):
+        query = value.strip()
+
+        if len(query) < 2:
+            raise serializers.ValidationError(
+                "Ensure this field has at least 2 non-whitespace characters."
+            )
+
+        return query
+
+    def validate_viewbox(self, value):
+        west, south, east, north = _parse_coordinate_tuple(
+            value,
+            expected_length=4,
+            field_name="viewbox",
+        )
+
+        if not -180 <= west < east <= 180:
+            raise serializers.ValidationError(
+                "West and east must form a valid longitude range."
+            )
+
+        if not -90 <= south < north <= 90:
+            raise serializers.ValidationError(
+                "South and north must form a valid latitude range."
+            )
+
+        return west, south, east, north
+
+    def validate_focus(self, value):
+        longitude, latitude = _parse_coordinate_tuple(
+            value,
+            expected_length=2,
+            field_name="focus",
+        )
+
+        if not -180 <= longitude <= 180 or not -90 <= latitude <= 90:
+            raise serializers.ValidationError(
+                "Focus must contain a valid longitude and latitude."
+            )
+
+        return longitude, latitude
 
 
 class SearchResultSerializer(CoordinateSerializer):
@@ -70,3 +115,19 @@ class SearchResultSerializer(CoordinateSerializer):
     label = serializers.CharField()
     category = serializers.CharField(allow_null=True)
     type = serializers.CharField(allow_null=True)
+
+
+def _parse_coordinate_tuple(value, *, expected_length, field_name):
+    try:
+        coordinates = tuple(float(part.strip()) for part in value.split(","))
+    except ValueError as error:
+        raise serializers.ValidationError(
+            f"{field_name} must contain comma-separated numbers."
+        ) from error
+
+    if len(coordinates) != expected_length:
+        raise serializers.ValidationError(
+            f"{field_name} must contain {expected_length} comma-separated numbers."
+        )
+
+    return coordinates

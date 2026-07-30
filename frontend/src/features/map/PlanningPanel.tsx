@@ -8,7 +8,7 @@ import {
 } from '../../lib/format'
 import { RouteInstructionList } from '../guidance/RouteInstructionList'
 import { SearchControl, type SearchField } from '../search/SearchControl'
-import type { SearchResult } from '../search/api'
+import type { SearchBias, SearchResult } from '../search/api'
 import type { RouteState } from './routeState'
 
 export type LocationStatus = {
@@ -24,6 +24,7 @@ type Props = {
   onActiveSearchFieldChange: (field: SearchField | null) => void
   currentLocationAvailable: boolean
   currentLocationLabel: string
+  getSearchBias: () => SearchBias | undefined
   locationStatus: LocationStatus | null
   waitingForLocation: boolean
   onUseCurrentLocation: () => void
@@ -42,6 +43,7 @@ export function PlanningPanel({
   onActiveSearchFieldChange,
   currentLocationAvailable,
   currentLocationLabel,
+  getSearchBias,
   locationStatus,
   waitingForLocation,
   onUseCurrentLocation,
@@ -98,6 +100,7 @@ export function PlanningPanel({
           destinationLabel={destinationLabel}
           currentLocationAvailable={currentLocationAvailable}
           currentLocationLabel={currentLocationLabel}
+          getSearchBias={getSearchBias}
           onUseCurrentLocation={onUseCurrentLocation}
           onSelectOrigin={onSelectOrigin}
           onSelectDestination={onSelectDestination}
